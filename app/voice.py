@@ -11,9 +11,9 @@ from dotenv import load_dotenv
 # WAKEWORD_PATH = "my_custom_kiwi.ppn"
 load_dotenv()
 ACCESS_KEY = os.getenv("ACCESS_KEY")
-# # # Initialize Porcupine with the custom wake word
+# # # Initialize Porcupine with built-in wake word
 sara = pvporcupine.create(
-    access_key=ACCESS_KEY, keyword_paths=["./assets/Tango_en_mac_v3_0_0.ppn"]
+    access_key=ACCESS_KEY, keywords=["porcupine"]
 )
 
 
@@ -26,7 +26,7 @@ def audio_callback(indata, frames, time, status):
     result = sara.process(pcm)
 
     if result >= 0:
-        print("Wake word 'sara' detected!")
+        print("Wake word 'porcupine' detected!")
 
 
 # Open a stream from the microphone
@@ -37,6 +37,6 @@ with sd.RawInputStream(
     channels=1,
     callback=audio_callback,
 ):
-    print("Listening for 'sara'... Press Ctrl+C to stop.")
+    print("Listening for 'porcupine'... Press Ctrl+C to stop.")
     while True:
         sd.sleep(1000)
