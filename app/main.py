@@ -6,6 +6,7 @@ from typing import Optional
 import time
 import os
 import instructor
+from openai import OpenAI
 from pydantic import BaseModel, Field, field_validator
 import subprocess
 from pymacnotifier import MacNotifier
@@ -26,89 +27,27 @@ if ENABLE_MEMORY:
 else:
     print("Memory functionality disabled")
 
-# Import Google GenAI for search capabilities
-try:
-    from google import genai
-    from google.genai import types
-    GENAI_AVAILABLE = True
-except ImportError:
-    GENAI_AVAILABLE = False
-    print("google-genai not available, search functionality will be disabled")
-
-# Environment variable for model provider
-MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "gemini").lower()
-
 def create_client():
-    """Create the appropriate client based on MODEL_PROVIDER environment variable."""
-    if MODEL_PROVIDER == "gemini":
-        try:
-            if GENAI_AVAILABLE:
-                # Create native GenAI client for search capabilities
-                native_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-                
-                # Create instructor client for structured outputs
-                instructor_client = instructor.from_provider(
-                    "google/gemini-2.5-flash-lite",
-                    api_key=os.getenv("GEMINI_API_KEY")
-                )
-                
-                return {
-                    "instructor": instructor_client,
-                    "native": native_client,
-                    "model": "gemini-2.5-flash-lite",
-                    "provider": "gemini"
-                }
-            else:
-                raise Exception("Google GenAI not available")
-        except Exception as e:
-            print(f"Failed to initialize Gemini client: {e}")
-            print("Falling back to Groq...")
-            # Fall back to Groq
-    elif MODEL_PROVIDER == "openai":
-        try:
-            from openai import OpenAI  # Lazy import; only needed when using OpenAI
-        except ImportError as exc:
-            raise RuntimeError(
-                "openai package not installed. Please add openai to your environment "
-                "or choose a different MODEL_PROVIDER."
-            ) from exc
+    """Create and return the OpenAI client configuration."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set in the environment.")
 
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set in the environment.")
-
-        model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        try:
-            openai_client = OpenAI(api_key=api_key)
-            instructor_client = instructor.from_openai(openai_client)
-            return {
-                "instructor": instructor_client,
-                "native": openai_client,
-                "model": model_name,
-                "provider": "openai"
-            }
-        except Exception as e:
-            raise RuntimeError(f"Failed to initialize OpenAI client: {e}") from e
-    
-    # Initialize Groq only if needed
+    model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     try:
-        from groq import Groq  # Lazy import so Gemini users don't need groq installed
-        groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        instructor_client = instructor.from_groq(groq_client)
+        openai_client = OpenAI(api_key=api_key)
+        instructor_client = instructor.from_openai(openai_client)
         return {
             "instructor": instructor_client,
-            "native": None,
-            "model": "openai/gpt-oss-120b",
-            "provider": "groq"
+            "native": openai_client,
+            "model": model_name,
+            "provider": "openai",
         }
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to initialize Groq client. If you intend to use Gemini, set MODEL_PROVIDER=gemini in your .env. Underlying error: {e}"
-        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to initialize OpenAI client: {exc}") from exc
 
-# Initialize client based on provider
 client_config = create_client()
-print(f"Using {client_config['provider']} provider with model: {client_config['model']}")
+print(f"Using OpenAI model: {client_config['model']}")
 
 monitor = ClipboardMonitor()
 monitor.start(log=True)
@@ -217,6 +156,15 @@ def speak_response(text: str):
     except Exception as e:
         print(f"Error playing voice response: {e}")
 
+def notify_user(message: Optional[str], emotion: Optional[str] = None):
+    """Show a concise notification while speaking full response."""
+    if not message:
+        return
+
+    notification_text = message if len(message) <= 50 else f"{message[:47]}..."
+    notifier.simple_notify(message=notification_text, emotion=emotion)
+    speak_response(message)
+
 
 def on_hotword_detected(text, audio):
     if ENABLE_MEMORY:
@@ -261,8 +209,8 @@ ACTIONS AVAILABLE:
 INSTRUCTIONS:
 - Focus on helping with clipboard content
 - If user asks to convert data formats, do it in full without truncating
-- Keep messages under 50 characters for notifications
-- Be concise and helpful
+- Provide medium-length (2-3 sentence) explanations when describing code or technical behavior, even if they exceed 50 characters. The app will shorten notification banners automatically.
+- For quick confirmations keep the core notification concise.
 """
                 },
                 {"role": "user", "content": prompt},
@@ -282,8 +230,7 @@ INSTRUCTIONS:
     # Handle the different action types
     if chat_completion.actionType == ActionType.NO_ACTION:
         if chat_completion.message:
-            notifier.simple_notify(message=chat_completion.message)
-            speak_response(chat_completion.message)
+            notify_user(chat_completion.message)
         print("No action needed.")
         return
 
@@ -291,8 +238,7 @@ INSTRUCTIONS:
         and chat_completion.content_for_clipboard):
         monitor.copy_text(chat_completion.content_for_clipboard)
         print("Clipboard updated.")
-        notifier.simple_notify(message=chat_completion.message)
-        speak_response(chat_completion.message)
+        notify_user(chat_completion.message)
         return
 
     if chat_completion.actionType == ActionType.MAKE_MEME:
@@ -315,8 +261,7 @@ INSTRUCTIONS:
         )
         monitor.copy_image(meme_image)
         print("Meme created and copied to clipboard.")
-        notifier.simple_notify(message=chat_completion.message)
-        speak_response(chat_completion.message)
+        notify_user(chat_completion.message)
         return
 
     if chat_completion.actionType == ActionType.REMOVE_BACKGROUND:
@@ -334,15 +279,12 @@ INSTRUCTIONS:
         bg_removed_image = remove_background(value)
         monitor.copy_image(bg_removed_image)
         print("Background removed and copied to clipboard.")
-        notifier.simple_notify(message=chat_completion.message)
-        speak_response(chat_completion.message)
+        notify_user(chat_completion.message)
         return
 
     if chat_completion.actionType == ActionType.SHORT_REPLY:
         if chat_completion.message:
-            notifier.simple_notify(message=chat_completion.message)
-            # Add voice response
-            speak_response(chat_completion.message)
+            notify_user(chat_completion.message)
         return
 
 def on_hotword_detected_with_memory(text, audio):
@@ -375,31 +317,6 @@ def on_hotword_detected_with_memory(text, audio):
     # prompt += "Relevant Previous Context:\n"
     # prompt += relevant_context
 
-    # Use appropriate client based on provider and search needs
-    if client_config["provider"] == "gemini" and client_config["native"]:
-        # For Gemini, try to use search first, then fall back to structured response
-        try:
-            # Check if the query might benefit from web search
-            search_keywords = ["current", "recent", "latest", "news", "today", "now", "update"]
-            should_search = any(keyword in text.lower() for keyword in search_keywords)
-            
-            if should_search:
-                # Use native client with search tool
-                grounding_tool = types.Tool(google_search=types.GoogleSearch())
-                config = types.GenerateContentConfig(tools=[grounding_tool])
-                
-                search_response = client_config["native"].models.generate_content(
-                    model=client_config["model"],
-                    contents=f"{prompt}\n\nUser Query: {text}",
-                    config=config,
-                )
-                
-                # If we got search results, use them in the structured response
-                if hasattr(search_response.candidates[0], 'grounding_metadata') and search_response.candidates[0].grounding_metadata:
-                    prompt += f"\n\nWeb Search Results: {search_response.text}"
-        except Exception as e:
-            print(f"Search failed, continuing with regular response: {e}")
-    
     # Generate structured response
     try:
         chat_completion = client_config["instructor"].chat.completions.create(
@@ -435,7 +352,7 @@ OTHER ACTIONS:
 
 Use the current date/time to understand when things happened relative to now. Only respond with valid JSON matching the AssistantResponse schema.
 If the user asks you to convert data formats, DO IT IN FULL DO NOT TRUNCATE ANYTHING. THERE IS NO CHARACTER LIMIT FOR COPIED CONTENT.
-Remember that you are primariy interacting via short messages and by assisting the user with their clipboard content. There might be some noisey text from the voice recognition, so focus on the core intent of the command.
+Remember that you are primariy interacting via short messages for quick confirmations, but when the user asks about code or technical behavior provide a medium-length explanation (a couple of sentences). There might be some noisey text from the voice recognition, so focus on the core intent of the command.
 """,
                 },
                 {"role": "user", "content": prompt},
@@ -465,13 +382,10 @@ Remember that you are primariy interacting via short messages and by assisting t
     )
 
     # response = chat_completion.choices[0].message.content
-    print(f"Full Groq response: {chat_completion}")
+    print(f"Full OpenAI response: {chat_completion}")
     if chat_completion.actionType == ActionType.NO_ACTION:
         if chat_completion.message:
-            notifier.simple_notify(
-                message=chat_completion.message, emotion=chat_completion.emoji
-            )
-            speak_response(chat_completion.message)
+            notify_user(chat_completion.message, emotion=chat_completion.emoji)
         print("No action needed.")
         return
 
@@ -480,14 +394,11 @@ Remember that you are primariy interacting via short messages and by assisting t
         and chat_completion.content_for_clipboard
     ):
         response = chat_completion.content_for_clipboard
-        print(f"Groq response: {response}")
+        print(f"OpenAI response: {response}")
         # use instructor to remove fluff so response is only the text to copy to clipboard
         monitor.copy_text(response)
-        print("Clipboard updated with Groq response.")
-        notifier.simple_notify(
-            message=chat_completion.message, emotion=chat_completion.emoji
-        )
-        speak_response(chat_completion.message)
+        print("Clipboard updated with OpenAI response.")
+        notify_user(chat_completion.message, emotion=chat_completion.emoji)
         return
 
     if chat_completion.actionType == ActionType.MAKE_MEME:
@@ -510,10 +421,7 @@ Remember that you are primariy interacting via short messages and by assisting t
         )
         monitor.copy_image(meme_image)
         print("Meme created and copied to clipboard.")
-        notifier.simple_notify(
-            message=chat_completion.message, emotion=chat_completion.emoji
-        )
-        speak_response(chat_completion.message)
+        notify_user(chat_completion.message, emotion=chat_completion.emoji)
         return
 
     if chat_completion.actionType == ActionType.REMOVE_BACKGROUND:
@@ -531,18 +439,12 @@ Remember that you are primariy interacting via short messages and by assisting t
         bg_removed_image = remove_background(value)
         monitor.copy_image(bg_removed_image)
         print("Background removed and copied to clipboard.")
-        notifier.simple_notify(
-            message=chat_completion.message, emotion=chat_completion.emoji
-        )
-        speak_response(chat_completion.message)
+        notify_user(chat_completion.message, emotion=chat_completion.emoji)
         return
 
     if chat_completion.actionType == ActionType.SHORT_REPLY:
         if chat_completion.message:
-            notifier.simple_notify(
-                message=chat_completion.message, emotion=chat_completion.emoji
-            )
-            speak_response(chat_completion.message)
+            notify_user(chat_completion.message, emotion=chat_completion.emoji)
         return
 
     if chat_completion.actionType == ActionType.SEARCH_MEMORY:
@@ -576,7 +478,7 @@ INSTRUCTIONS:
 - If search results are empty/irrelevant: "I couldn't find any relevant information about [topic]"  
 - If results contain useful info: Summarize what you found and offer to copy specific details if helpful
 - Be conversational and helpful - don't just list raw search results
-- Keep messages under 50 characters due to notification limits""",
+- Provide medium-length explanations (a couple of sentences) when describing code or technical findings; the app will handle notification truncation automatically.""",
                     },
                     {"role": "user", "content": follow_up_prompt},
                 ],
@@ -587,11 +489,9 @@ INSTRUCTIONS:
             # Handle the follow-up response
             if follow_up_completion.actionType == ActionType.COPY_TEXT_TO_CLIPBOARD and follow_up_completion.content_for_clipboard:
                 monitor.copy_text(follow_up_completion.content_for_clipboard)
-                notifier.simple_notify(message=follow_up_completion.message)
-                speak_response(follow_up_completion.message)
+                notify_user(follow_up_completion.message, emotion=follow_up_completion.emoji)
             elif follow_up_completion.actionType == ActionType.SHORT_REPLY:
-                notifier.simple_notify(message=follow_up_completion.message)
-                speak_response(follow_up_completion.message)
+                notify_user(follow_up_completion.message, emotion=follow_up_completion.emoji)
             
             # Store the memory search interaction
             memory.store_interaction(
@@ -613,8 +513,7 @@ INSTRUCTIONS:
             # Use explicit memory storage method for ChromaDB
             entry_id = memory.store_explicit_memory(memory_type, chat_completion.memory_save_content, metadata)
             print(f"Saved to memory with ID: {entry_id}")
-            notifier.simple_notify(message=chat_completion.message)
-            speak_response(chat_completion.message)
+            notify_user(chat_completion.message, emotion=chat_completion.emoji)
         return
 
 
