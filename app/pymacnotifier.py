@@ -35,19 +35,7 @@ class MacNotifier:
         # Set up paths to icons
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.emojis_dir = os.path.join(current_dir, "assets", "emojis")
-
-        # Define available emotions
-        self.available_emotions = {
-            "angry",
-            "annoyed",
-            "excited",
-            "happy",
-            "love",
-            "sad",
-            "surprised",
-            "thinking",
-            "winking",
-        }
+        self.default_icon_path = os.path.join(self.emojis_dir, "standard.svg")
 
     def _check_terminal_notifier(self):
         """Check if terminal-notifier is installed."""
@@ -65,18 +53,18 @@ class MacNotifier:
         Get the path to the emoji icon based on emotion.
 
         Args:
-            emotion: The emotion name (e.g., 'happy', 'sad', 'angry')
+            emotion: Optional icon name to select from the emojis directory.
 
         Returns:
-            str: Path to the emoji file, falls back to default logo if emotion not found
+            str: Path to the emoji file, falling back to the default Sara icon when not found.
         """
-        if emotion and emotion.lower() in self.available_emotions:
+        if emotion:
             emoji_path = os.path.join(self.emojis_dir, f"{emotion.lower()}.svg")
             if os.path.exists(emoji_path):
                 return emoji_path
 
-        # Fallback to happy emoji logo
-        return os.path.join(self.emojis_dir, "happy.svg")
+        # Fallback to the default Sara icon
+        return self.default_icon_path
 
     def notify(
         self,
