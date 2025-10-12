@@ -25,7 +25,12 @@ if not USE_LIVEKIT:
             self.keyword = keyword.lower()
             self.callback = callback
             # Determine provider
-            self.provider = os.getenv("MODEL_PROVIDER", "gemini").lower()
+            self.provider = (
+                os.getenv("TRANSCRIPTION_PROVIDER")
+                or os.getenv("STT_PROVIDER")
+                or os.getenv("MODEL_PROVIDER")
+                or "openai"
+            ).lower()
             self.groq_client = None
             self.gemini_client = None
             self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")

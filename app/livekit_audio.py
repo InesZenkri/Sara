@@ -20,9 +20,16 @@ class LiveKitAudioHandler:
         self.livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
         
         # STT configuration
-        self.stt_provider = os.getenv("STT_PROVIDER", "groq").lower()
+        self.stt_provider = (
+            os.getenv("TRANSCRIPTION_PROVIDER")
+            or os.getenv("STT_PROVIDER")
+            or os.getenv("MODEL_PROVIDER")
+            or "openai"
+        ).lower()
         self.groq_client = None
         self.gemini_client = None
+        self.openai_client = None
+        self.openai_transcription_model = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1")
         
         # LiveKit components
         self.room = None
@@ -43,6 +50,16 @@ class LiveKitAudioHandler:
                 print("LiveKit using Groq for STT")
             except Exception as e:
                 print(f"Failed to init Groq STT: {e}")
+        elif self.stt_provider == "openai":
+            try:
+                from openai import OpenAI
+                api_key = os.getenv("OPENAI_API_KEY")
+                if not api_key:
+                    raise RuntimeError("OPENAI_API_KEY is not set.")
+                self.openai_client = OpenAI(api_key=api_key)
+                print(f"LiveKit using OpenAI ({self.openai_transcription_model}) for STT")
+            except Exception as e:
+                print(f"Failed to init OpenAI STT: {e}")
         else:
             try:
                 from google import genai
@@ -178,7 +195,23 @@ class LiveKitAudioHandler:
                         )
                         return transcription.text
                 os.unlink(tmp_file.name)
-                
+            
+            elif self.stt_provider == "openai" and self.openai_client:
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
+                    tmp_file.write(wav_data)
+                    tmp_file.flush()
+
+                    with open(tmp_file.name, "rb") as file:
+                        transcription = self.openai_client.audio.transcriptions.create(
+                            file=file,
+                            model=self.openai_transcription_model,
+                        )
+                        text = getattr(transcription, "text", None)
+                        if not text and isinstance(transcription, dict):
+                            text = transcription.get("text", "")
+                        return text or ""
+                os.unlink(tmp_file.name)
+
             elif self.gemini_client:
                 # Use Gemini for transcription
                 from google.genai import types

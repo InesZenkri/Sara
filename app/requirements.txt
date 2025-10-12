@@ -1,5 +1,4 @@
 python-dotenv
-groq
 google-genai
 numpy
 sounddevice

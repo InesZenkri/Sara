@@ -14,6 +14,7 @@ from bg_remove import remove_background
 from dotenv import load_dotenv
 from tts import CartesiaTTS
 from facebook import post_photos_to_page
+from chess_analyzer import analyze_chess_position, ChessAnalysisError
 
 # Load environment from .env so API keys and config are available
 load_dotenv()
@@ -82,6 +83,7 @@ class ActionType(Enum):
     SEARCH_MEMORY = "SEARCH_MEMORY"
     SAVE_TO_MEMORY = "SAVE_TO_MEMORY"
     POST_TO_FACEBOOK = "POST_TO_FACEBOOK"
+    ANALYZE_CHESS = "ANALYZE_CHESS"
 
 
 class BaseAssistantResponse(BaseModel):
@@ -207,10 +209,12 @@ ACTIONS AVAILABLE:
 - MAKE_MEME: Create meme from clipboard image with top/bottom text  
 - REMOVE_BACKGROUND: Remove background from clipboard image, making it transparent
 - POST_TO_FACEBOOK: Post images from clipboard to your Facebook Page. Include an optional caption.
+- ANALYZE_CHESS: Capture the current screen and analyze the visible chess position to recommend the strongest move.
 - SHORT_REPLY: Just notify user with a message
 - NO_ACTION: When no action is needed
 
 INSTRUCTIONS:
+- Only choose ANALYZE_CHESS when the user clearly references chess or wants help finding their next move.
 - Focus on helping with clipboard content
 - If user asks to convert data formats, do it in full without truncating
 - Provide medium-length (2-3 sentence) explanations when describing code or technical behavior, even if they exceed 50 characters. The app will shorten notification banners automatically.
@@ -308,6 +312,47 @@ INSTRUCTIONS:
             notify_user("Facebook post failed")
         return
 
+    if chat_completion.actionType == ActionType.ANALYZE_CHESS:
+        try:
+            analysis = analyze_chess_position(
+                client_config.get("native"),
+                user_hint=text,
+            )
+            best_move = analysis.best_move or "No legal move identified"
+            move_description = analysis.move_description or best_move
+            evaluation = analysis.evaluation or "No evaluation"
+            explanation = analysis.explanation.strip()
+            confidence = None
+            raw_confidence = analysis.confidence
+            if isinstance(raw_confidence, (int, float)):
+                confidence = f"{raw_confidence * 100:.0f}% confidence"
+            elif isinstance(raw_confidence, str):
+                try:
+                    confidence_val = float(raw_confidence)
+                    confidence = f"{confidence_val * 100:.0f}% confidence"
+                except ValueError:
+                    confidence = raw_confidence.strip() or None
+
+            summary_parts = [f"Best move (SAN): {best_move}"]
+            if move_description and move_description != best_move:
+                summary_parts.append(f"Move description: {move_description}")
+            summary_parts.append(f"Evaluation: {evaluation}")
+            if confidence:
+                summary_parts.append(confidence)
+            summary_parts.append(f"Explanation: {explanation}")
+            summary_text = "\n".join(summary_parts)
+
+            monitor.copy_text(summary_text)
+            notify_user(move_description or f"Best move: {best_move}")
+            print(f"Chess analysis:\n{summary_text}")
+        except ChessAnalysisError as err:
+            print(f"Chess analysis failed: {err}")
+            notify_user("Chess analysis failed")
+        except Exception as err:  # Catch-all to avoid crashing the assistant
+            print(f"Unexpected chess analysis error: {err}")
+            notify_user("Chess analysis failed")
+        return
+
     if chat_completion.actionType == ActionType.SHORT_REPLY:
         if chat_completion.message:
             notify_user(chat_completion.message)
@@ -375,9 +420,11 @@ OTHER ACTIONS:
 - MAKE_MEME: Create meme from clipboard image with top/bottom text
 - REMOVE_BACKGROUND: Remove background from clipboard image, making it transparent
 - POST_TO_FACEBOOK: Post images from clipboard to your Facebook Page. Include an optional caption.
+- ANALYZE_CHESS: Capture the current screen and analyze the visible chess position to recommend the strongest move when the user asks for chess help.
 - SHORT_REPLY: Just notify user with a message. Their clipboard remains unchanged.
 
 Use the current date/time to understand when things happened relative to now. Only respond with valid JSON matching the AssistantResponse schema.
+Only choose ANALYZE_CHESS when the user clearly references playing chess or requests a best move recommendation.
 If the user asks you to convert data formats, DO IT IN FULL DO NOT TRUNCATE ANYTHING. THERE IS NO CHARACTER LIMIT FOR COPIED CONTENT.
 Remember that you are primariy interacting via short messages for quick confirmations, but when the user asks about code or technical behavior provide a medium-length explanation (a couple of sentences). There might be some noisey text from the voice recognition, so focus on the core intent of the command.
 """,
@@ -489,6 +536,54 @@ Remember that you are primariy interacting via short messages for quick confirma
         except Exception as e:
             print(f"Facebook post failed: {e}")
             notify_user("Facebook post failed", emotion=chat_completion.emoji)
+        return
+
+    if chat_completion.actionType == ActionType.ANALYZE_CHESS:
+        try:
+            analysis = analyze_chess_position(
+                client_config.get("native"),
+                user_hint=text,
+            )
+            best_move = analysis.best_move or "No legal move identified"
+            evaluation = analysis.evaluation or "No evaluation"
+            explanation = analysis.explanation.strip()
+            confidence = None
+            raw_confidence = analysis.confidence
+            if isinstance(raw_confidence, (int, float)):
+                confidence = f"{raw_confidence * 100:.0f}% confidence"
+            elif isinstance(raw_confidence, str):
+                try:
+                    confidence_val = float(raw_confidence)
+                    confidence = f"{confidence_val * 100:.0f}% confidence"
+                except ValueError:
+                    confidence = raw_confidence.strip() or None
+
+            summary_parts = [
+                f"Best move: {best_move}",
+                f"Evaluation: {evaluation}",
+            ]
+            if confidence:
+                summary_parts.append(confidence)
+            summary_parts.append(f"Explanation: {explanation}")
+            summary_text = "\n".join(summary_parts)
+
+            monitor.copy_text(summary_text)
+            notify_user(f"Best move: {best_move}", emotion=chat_completion.emoji)
+            print(f"Chess analysis:\n{summary_text}")
+
+            # Store the analysis outcome in memory for future recall
+            memory.store_interaction(
+                voice_command=text,
+                response=summary_text,
+                clipboard_content=None,
+                action_type="ANALYZE_CHESS",
+            )
+        except ChessAnalysisError as err:
+            print(f"Chess analysis failed: {err}")
+            notify_user("Chess analysis failed", emotion=chat_completion.emoji)
+        except Exception as err:
+            print(f"Unexpected chess analysis error: {err}")
+            notify_user("Chess analysis failed", emotion=chat_completion.emoji)
         return
 
     if chat_completion.actionType == ActionType.SHORT_REPLY:
