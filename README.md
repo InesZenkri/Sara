@@ -4,6 +4,45 @@ Big Berlin Hack 2025, making your clipboard a supertool
 
 Sara is an AI-powered macOS assistant that enhances your clipboard functionality. It can read and modify text, create memes, remove image backgrounds, and remember your preferences using persistent memory. Powered by LiveKit for real-time audio processing and Cartesia for voice synthesis, Sara provides a seamless voice-enabled experience that Siri could have been to help you with everyday tasks.
 
+## What Sara can do
+
+Core voice/clipboard actions
+- Copy text to the clipboard on command. Great for: summaries, re-writes, code generation, data extraction, and format conversions. There is no character limit for copied content.
+- Short reply/confirmations. Give you a quick spoken/notification response when no clipboard change is needed.
+- Monitor your clipboard (text and images) and operate on the most recent content automatically.
+
+Image tools (operate on the image currently in your clipboard)
+- Make meme: Add top and/or bottom text to the clipboard image in bold meme style, then copy the result back to your clipboard.
+- Remove background: Remove the background from the clipboard image (transparent PNG when possible), then copy the result back to your clipboard.
+
+Social posting
+- Post to Facebook Page: Post one or more images from your clipboard to a Facebook Page you manage. Optionally include a caption. Sara can analyze the image to suggest an engaging caption (useful when selling items). Requires FACEBOOK_PAGE_ID and FACEBOOK_PAGE_ACCESS_TOKEN.
+
+Chess helper
+- Analyze chess position on screen: Capture the current screen (requires screen recording permission on macOS) and analyze the visible chessboard to recommend the strongest move. The result (best move, evaluation and short explanation) is copied to your clipboard.
+
+Memory (optional, disabled by default)
+- Save to memory: Remember preferences, important info, reminders, and notes for later recall. Trigger phrases include “remember that…”, “save this…”, “note that…”. Enable with ENABLE_MEMORY=true.
+- Search memory: Retrieve past information you asked Sara to remember (e.g., “what did we talk about yesterday?”, “find that email address I saved”).
+
+Voice and hearing
+- Hotword “sara”: Hands‑free activation. Works with either LiveKit real‑time audio or a local VAD fallback.
+- Speech-to-text: Transcribe your speech using OpenAI Whisper by default, or Groq/Gemini if configured.
+- Text‑to‑speech: Natural voice replies using Cartesia TTS. Requires CARTESIA_API_KEY.
+
+Examples you can say
+- “Sara, summarize this and copy it to my clipboard.”
+- “Sara, turn this screenshot into a meme: top ‘when the build finally passes’, bottom ‘ship it’.”
+- “Sara, remove the background from this image.”
+- “Sara, post these to my Facebook page with the caption ‘Weekend vibes’.”
+- “Sara, what’s the best move here?”
+- “Sara, remember that I prefer 24‑hour time.”
+- “Sara, what did we discuss about my trip last week?”
+
+Notes
+- Memory features are available only when ENABLE_MEMORY=true. When disabled, Sara still handles clipboard editing, memes, background removal, short replies, and Facebook posting.
+- Facebook posting requires proper Page permissions and environment variables (see Facebook Posting below).
+- LiveKit can be disabled with USE_LIVEKIT=false to use VAD.
 
 ## Setup
 
