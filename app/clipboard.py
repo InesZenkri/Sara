@@ -5,6 +5,7 @@ if platform.system() != "Darwin":
 
 import time
 import io
+import os
 import AppKit
 from PIL import Image
 import threading
@@ -85,7 +86,55 @@ class ClipboardMonitor:
                 continue
             self.last_change = current_change
 
-            # Try images first
+            # Try to read image file URLs first (to avoid Finder icon thumbnails)
+            try:
+                options = {AppKit.NSPasteboardURLReadingFileURLsOnlyKey: True}
+                url_objs = self.pb.readObjectsForClasses_options_([AppKit.NSURL], options)
+            except Exception:
+                url_objs = None
+            if url_objs:
+                exts = {'.png', '.jpg', '.jpeg', '.gif', '.tif', '.tiff', '.bmp', '.heic', '.heif', '.webp'}
+                for url in url_objs:
+                    try:
+                        path = str(url.path())
+                    except Exception:
+                        path = None
+                    if not path or not os.path.isfile(path):
+                        continue
+                    if os.path.splitext(path)[1].lower() in exts:
+                        try:
+                            img = Image.open(path)
+                            self.last_item = ('image', img)
+                            if self.log:
+                                print(self.last_item)
+                            break
+                        except Exception:
+                            continue
+                if self.last_item and self.last_item[0] == 'image':
+                    continue
+
+            # Next try raw image data types (PNG/TIFF)
+            png_type = getattr(AppKit, 'NSPasteboardTypePNG', 'public.png')
+            tiff_type = getattr(AppKit, 'NSPasteboardTypeTIFF', 'public.tiff')
+            for typ in (png_type, tiff_type):
+                try:
+                    data = self.pb.dataForType_(typ)
+                except Exception:
+                    data = None
+                if data:
+                    try:
+                        raw = bytes(data)
+                        img = Image.open(io.BytesIO(raw))
+                        self.last_item = ('image', img)
+                        if self.log:
+                            print(self.last_item)
+                        break
+                    except Exception:
+                        pass
+            if self.last_item and self.last_item[0] == 'image':
+                continue
+
+            # Finally fall back to NSImage objects (may be Finder icon if copying files)
             classes = [AppKit.NSImage]
             objs = self.pb.readObjectsForClasses_options_(classes, None)
             if objs:
@@ -113,6 +162,68 @@ class ClipboardMonitor:
     def get_last(self):
         """Return the last clipboard item as a tuple (type, data)."""
         return self.last_item
+
+    def get_images(self):
+        """Return all images currently available on the pasteboard as a list of PIL.Image.
+        Preference order:
+        1) Image file URLs (actual image files),
+        2) Raw image data types (PNG/TIFF),
+        3) NSImage objects (may be Finder icon thumbnails).
+        Does not change the stored last_item.
+        """
+        images = []
+
+        # 1) Try image file URLs
+        try:
+            options = {AppKit.NSPasteboardURLReadingFileURLsOnlyKey: True}
+            url_objs = self.pb.readObjectsForClasses_options_([AppKit.NSURL], options)
+        except Exception:
+            url_objs = None
+        if url_objs:
+            exts = {'.png', '.jpg', '.jpeg', '.gif', '.tif', '.tiff', '.bmp', '.heic', '.heif', '.webp'}
+            for url in url_objs:
+                try:
+                    path = str(url.path())
+                except Exception:
+                    path = None
+                if not path or not os.path.isfile(path):
+                    continue
+                if os.path.splitext(path)[1].lower() in exts:
+                    try:
+                        img = Image.open(path)
+                        images.append(img)
+                    except Exception:
+                        continue
+        if images:
+            return images
+
+        # 2) Try raw image data types
+        png_type = getattr(AppKit, 'NSPasteboardTypePNG', 'public.png')
+        tiff_type = getattr(AppKit, 'NSPasteboardTypeTIFF', 'public.tiff')
+        for typ in (png_type, tiff_type):
+            try:
+                data = self.pb.dataForType_(typ)
+            except Exception:
+                data = None
+            if data:
+                try:
+                    raw = bytes(data)
+                    img = Image.open(io.BytesIO(raw))
+                    images.append(img)
+                except Exception:
+                    pass
+        if images:
+            return images
+
+        # 3) Fallback to NSImage objects
+        classes = [AppKit.NSImage]
+        objs = self.pb.readObjectsForClasses_options_(classes, None)
+        if objs:
+            for nsimage in objs:
+                img = save_nsimage(nsimage)
+                if img is not None:
+                    images.append(img)
+        return images
     
     def copy_text(self, text, rich_text=None):
         """

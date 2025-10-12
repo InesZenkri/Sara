@@ -76,6 +76,27 @@ export OPENAI_TRANSCRIPTION_MODEL=whisper-1
 
 ### Installation
 
+#### Facebook Posting
+
+You can ask Sara to post images from your clipboard to your Facebook Page.
+
+Requirements:
+- A Facebook Page you manage
+- A Page Access Token with permissions: `pages_manage_posts`, `pages_read_engagement`
+- Environment variables set:
+  - `FACEBOOK_PAGE_ID`
+  - `FACEBOOK_PAGE_ACCESS_TOKEN`
+
+Usage examples:
+- "Sara, post these to my Facebook page with the caption 'Weekend vibes'"
+- "Sara, post the clipboard images to Facebook"
+
+Sara will post each image as its own photo post on your Page. The caption (if provided) will be applied to the first image.
+
+---
+
+### Installation
+
 1. Install dependencies:
 
 ```bash

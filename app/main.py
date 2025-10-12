@@ -13,6 +13,7 @@ from pymacnotifier import MacNotifier
 from bg_remove import remove_background
 from dotenv import load_dotenv
 from tts import CartesiaTTS
+from facebook import post_photos_to_page
 
 # Load environment from .env so API keys and config are available
 load_dotenv()
@@ -33,7 +34,7 @@ def create_client():
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set in the environment.")
 
-    model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model_name = os.getenv("OPENAI_MODEL", "gpt-5-mini")
     try:
         openai_client = OpenAI(api_key=api_key)
         instructor_client = instructor.from_openai(openai_client)
@@ -80,6 +81,7 @@ class ActionType(Enum):
     REMOVE_BACKGROUND = "REMOVE_BACKGROUND"
     SEARCH_MEMORY = "SEARCH_MEMORY"
     SAVE_TO_MEMORY = "SAVE_TO_MEMORY"
+    POST_TO_FACEBOOK = "POST_TO_FACEBOOK"
 
 
 class BaseAssistantResponse(BaseModel):
@@ -97,6 +99,7 @@ class BaseAssistantResponse(BaseModel):
     content_for_clipboard: Optional[str] = None
     meme_top_text: Optional[str] = Field(None, description="Top text for the meme")
     meme_bottom_text: Optional[str] = Field(None, description="Bottom text for the meme")
+    facebook_caption: Optional[str] = Field(None, description="Caption to include when posting images to Facebook")
     
     @field_validator('actionType', mode='before')
     @classmethod
@@ -203,6 +206,7 @@ ACTIONS AVAILABLE:
 - COPY_TEXT_TO_CLIPBOARD: Copy specific text to clipboard (most common action)
 - MAKE_MEME: Create meme from clipboard image with top/bottom text  
 - REMOVE_BACKGROUND: Remove background from clipboard image, making it transparent
+- POST_TO_FACEBOOK: Post images from clipboard to your Facebook Page. Include an optional caption.
 - SHORT_REPLY: Just notify user with a message
 - NO_ACTION: When no action is needed
 
@@ -282,6 +286,28 @@ INSTRUCTIONS:
         notify_user(chat_completion.message)
         return
 
+    if chat_completion.actionType == ActionType.POST_TO_FACEBOOK:
+        print("Posting images to Facebook...")
+        images = monitor.get_images() or []
+        if not images:
+            last = monitor.get_last()
+            if last and last[0] == 'image' and last[1] is not None:
+                images = [last[1]]
+        if not images:
+            print("No images found in clipboard to post.")
+            notify_user("No images in clipboard to post")
+            return
+        try:
+            count = post_photos_to_page(images, caption=getattr(chat_completion, 'facebook_caption', None))
+            if count > 0:
+                notify_user(chat_completion.message or f"Posted {count} image(s) to Facebook")
+            else:
+                notify_user("Failed to post to Facebook")
+        except Exception as e:
+            print(f"Facebook post failed: {e}")
+            notify_user("Facebook post failed")
+        return
+
     if chat_completion.actionType == ActionType.SHORT_REPLY:
         if chat_completion.message:
             notify_user(chat_completion.message)
@@ -348,6 +374,7 @@ OTHER ACTIONS:
 - COPY_TEXT_TO_CLIPBOARD: Copy specific text user requests. This is your primary action for most commands, as the user will be asking you to help with their clipboard content.
 - MAKE_MEME: Create meme from clipboard image with top/bottom text
 - REMOVE_BACKGROUND: Remove background from clipboard image, making it transparent
+- POST_TO_FACEBOOK: Post images from clipboard to your Facebook Page. Include an optional caption.
 - SHORT_REPLY: Just notify user with a message. Their clipboard remains unchanged.
 
 Use the current date/time to understand when things happened relative to now. Only respond with valid JSON matching the AssistantResponse schema.
@@ -440,6 +467,28 @@ Remember that you are primariy interacting via short messages for quick confirma
         monitor.copy_image(bg_removed_image)
         print("Background removed and copied to clipboard.")
         notify_user(chat_completion.message, emotion=chat_completion.emoji)
+        return
+
+    if chat_completion.actionType == ActionType.POST_TO_FACEBOOK:
+        print("Posting images to Facebook...")
+        images = monitor.get_images() or []
+        if not images:
+            last = monitor.get_last()
+            if last and last[0] == 'image' and last[1] is not None:
+                images = [last[1]]
+        if not images:
+            print("No images found in clipboard to post.")
+            notify_user("No images in clipboard to post", emotion=chat_completion.emoji)
+            return
+        try:
+            count = post_photos_to_page(images, caption=getattr(chat_completion, 'facebook_caption', None))
+            if count > 0:
+                notify_user(chat_completion.message or f"Posted {count} image(s) to Facebook", emotion=chat_completion.emoji)
+            else:
+                notify_user("Failed to post to Facebook", emotion=chat_completion.emoji)
+        except Exception as e:
+            print(f"Facebook post failed: {e}")
+            notify_user("Facebook post failed", emotion=chat_completion.emoji)
         return
 
     if chat_completion.actionType == ActionType.SHORT_REPLY:
