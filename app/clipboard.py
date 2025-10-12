@@ -9,6 +9,10 @@ import os
 import AppKit
 from PIL import Image
 import threading
+import pillow_heif  # type: ignore
+pillow_heif.register_heif_opener()
+
+
 
 def save_nsimage(nsimage):
     """

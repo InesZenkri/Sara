@@ -208,7 +208,7 @@ ACTIONS AVAILABLE:
 - COPY_TEXT_TO_CLIPBOARD: Copy specific text to clipboard (most common action)
 - MAKE_MEME: Create meme from clipboard image with top/bottom text  
 - REMOVE_BACKGROUND: Remove background from clipboard image, making it transparent
-- POST_TO_FACEBOOK: Post images from clipboard to your Facebook Page. Include an optional caption.
+- POST_TO_FACEBOOK: Post images from clipboard to your Facebook Page. Analyze the image to generate a caption that describes the image and will be included in the post.
 - ANALYZE_CHESS: Capture the current screen and analyze the visible chess position to recommend the strongest move.
 - SHORT_REPLY: Just notify user with a message
 - NO_ACTION: When no action is needed
@@ -219,6 +219,7 @@ INSTRUCTIONS:
 - If user asks to convert data formats, do it in full without truncating
 - Provide medium-length (2-3 sentence) explanations when describing code or technical behavior, even if they exceed 50 characters. The app will shorten notification banners automatically.
 - For quick confirmations keep the core notification concise.
+- For image captioning for Facebook posts. Generate engaging captions when the you want to sell an item. If the price is not provided, search the internet for typical pricing.
 """
                 },
                 {"role": "user", "content": prompt},
@@ -419,7 +420,7 @@ OTHER ACTIONS:
 - COPY_TEXT_TO_CLIPBOARD: Copy specific text user requests. This is your primary action for most commands, as the user will be asking you to help with their clipboard content.
 - MAKE_MEME: Create meme from clipboard image with top/bottom text
 - REMOVE_BACKGROUND: Remove background from clipboard image, making it transparent
-- POST_TO_FACEBOOK: Post images from clipboard to your Facebook Page. Include an optional caption.
+- POST_TO_FACEBOOK: Post images from clipboard to your Facebook Page. Include an optional caption. Analyze the image to generate a caption that describes the image and will be included in the post. Generate engaging captions when the you want to sell an item. If the price is not provided, search the internet for typical pricing.
 - ANALYZE_CHESS: Capture the current screen and analyze the visible chess position to recommend the strongest move when the user asks for chess help.
 - SHORT_REPLY: Just notify user with a message. Their clipboard remains unchanged.
 

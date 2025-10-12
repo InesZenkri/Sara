@@ -3,6 +3,14 @@ import io
 import requests
 from typing import List, Optional
 from PIL import Image
+# Optional HEIC/HEIF support for Pillow
+try:
+    import pillow_heif  # type: ignore
+    pillow_heif.register_heif_opener()
+except Exception:
+    # If pillow-heif isn't installed, Pillow may fail to open .heic/.heif files.
+    # The CLI will surface a helpful error message on failure.
+    pass
 import dotenv
 
 dotenv.load_dotenv()
@@ -18,21 +26,59 @@ def _get_env(name: str) -> str:
     return val
 
 
-def _image_to_bytes(img: Image.Image) -> bytes:
+def _image_to_bytes(img: Image.Image) -> tuple[bytes, str, str]:
+    """Convert PIL Image to bytes with appropriate format.
+
+    Returns:
+        tuple: (image_bytes, filename, mime_type)
+    """
     buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    return buf.getvalue()
+
+    # Determine the best format based on image properties
+    # Use PNG for images with transparency, JPEG for everything else
+    if img.mode in ('RGBA', 'LA', 'P'):
+        # Image has or might have transparency
+        if img.mode == 'P':
+            # Palette mode - check if it has transparency
+            if 'transparency' in img.info:
+                img = img.convert('RGBA')
+                format_type = 'PNG'
+            else:
+                img = img.convert('RGB')
+                format_type = 'JPEG'
+        else:
+            format_type = 'PNG'
+    else:
+        # No transparency - use JPEG for better compression
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        format_type = 'JPEG'
+
+    # Save with appropriate format
+    if format_type == 'JPEG':
+        img.save(buf, format='JPEG', quality=95, optimize=True)
+        filename = 'image.jpg'
+        mime_type = 'image/jpeg'
+    else:
+        img.save(buf, format='PNG', optimize=True)
+        filename = 'image.png'
+        mime_type = 'image/png'
+
+    return buf.getvalue(), filename, mime_type
 
 
 def post_photos_to_page(images: List[Image.Image], caption: Optional[str] = None) -> int:
-    """Post one or more images to a Facebook Page.
+    """Create a standard Page post (feed post) with one or more images attached.
 
-    Minimal implementation: uploads each image as its own photo post on the Page.
-    This avoids complex multi-attachment publishing. Returns the count of successfully posted images.
+    Implementation:
+    1) Upload each image to /{page-id}/photos with published=false to get media_fbids
+    2) Create a single /{page-id}/feed post with attached_media referencing those media_fbids
+
+    Returns the number of images attached to the created post (0 if failed or no images).
 
     Requires env vars:
       - FACEBOOK_PAGE_ID
-      - FACEBOOK_PAGE_ACCESS_TOKEN (a Page Access Token with pages_manage_posts, pages_read_engagement)
+      - FACEBOOK_PAGE_ACCESS_TOKEN (Page Access Token with pages_manage_posts)
     """
     if not images:
         return 0
@@ -40,37 +86,62 @@ def post_photos_to_page(images: List[Image.Image], caption: Optional[str] = None
     page_id = _get_env("FACEBOOK_PAGE_ID")
     token = _get_env("FACEBOOK_PAGE_ACCESS_TOKEN")
 
-    url = f"https://graph.facebook.com/v21.0/{page_id}/photos"
+    # 1) Upload images as unpublished photos to obtain media_fbid IDs
+    upload_url = f"https://graph.facebook.com/v21.0/{page_id}/photos"
+    media_fbids: List[str] = []
 
-    success = 0
-    for idx, img in enumerate(images):
+    for img in images:
+        img_bytes, filename, mime_type = _image_to_bytes(img)
         files = {
-            'source': ('image.png', _image_to_bytes(img), 'image/png')
+            'source': (filename, img_bytes, mime_type)
         }
         data = {
             'access_token': token,
+            'published': 'false',
         }
-        if caption and idx == 0:
-            # Set caption on the first image only to avoid repeated captions
-            data['caption'] = caption
         try:
-            resp = requests.post(url, data=data, files=files, timeout=60)
+            resp = requests.post(upload_url, data=data, files=files, timeout=60)
             if resp.status_code != 200:
-                raise FacebookError(f"Facebook API error: {resp.status_code} {resp.text}")
-            success += 1
+                raise FacebookError(f"Facebook photo upload error: {resp.status_code} {resp.text}")
+            payload = resp.json()
+            media_id = payload.get('id')
+            if media_id:
+                media_fbids.append(media_id)
         except Exception as e:
-            # Continue trying next images, but keep count
-            print(f"Failed to post image {idx+1}: {e}")
+            print(f"Failed to upload image: {e}")
             continue
 
-    return success
+    if not media_fbids:
+        return 0
+
+    # 2) Create the feed post with attached_media
+    feed_url = f"https://graph.facebook.com/v21.0/{page_id}/feed"
+    data = {
+        'access_token': token,
+    }
+    if caption:
+        data['message'] = caption
+
+    # attached_media[n] must be JSON strings like {"media_fbid":"<ID>"}
+    for idx, media_id in enumerate(media_fbids):
+        data[f"attached_media[{idx}]"] = f'{{"media_fbid":"{media_id}"}}'
+
+    try:
+        resp = requests.post(feed_url, data=data, timeout=60)
+        if resp.status_code != 200:
+            raise FacebookError(f"Facebook feed post error: {resp.status_code} {resp.text}")
+        # On success, return number of images attached
+        return len(media_fbids)
+    except Exception as e:
+        print(f"Failed to create feed post: {e}")
+        return 0
 
 if __name__ == "__main__":
     import argparse
     import sys
 
-    parser = argparse.ArgumentParser(description="Post an image to your Facebook Page via Graph API")
-    parser.add_argument("--image_path", help="Path to the image file to upload", default='/Users/zenkri/Desktop/img.png')
+    parser = argparse.ArgumentParser(description="Create a Facebook Page post (feed) with an image via Graph API")
+    parser.add_argument("--image_path", help="Path to the image file to upload (.png, .jpg, .jpeg, .gif, .tif, .tiff, .bmp, .heic, .heif, .webp)", default='/Users/zenkri/Desktop/img.png')
     parser.add_argument("--caption", "-c", help="Optional caption for the post", default='This is my first post')
     args = parser.parse_args()
 
