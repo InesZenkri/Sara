@@ -4,6 +4,8 @@ Big Berlin Hack 2025, making your clipboard a supertool
 
 Sara is an AI-powered macOS assistant that enhances your clipboard functionality. It can read and modify text, create memes, remove image backgrounds, and remember your preferences using persistent memory. Powered by LiveKit for real-time audio processing and Cartesia for voice synthesis, Sara provides a seamless voice-enabled experience that Siri could have been to help you with everyday tasks.
 
+> **Status (Oct 2026):** Sara is a hackathon project (Big Berlin Hack 2025) that works on macOS only and has not been tested on other systems. It needs your own API keys (see Setup). A "Sara v2: acts while you speak" upgrade is in progress as separate pull requests: a Mac control layer (open apps, create notes, confirmed typing), streaming intent detection, command-boundary rules, and an optional overlay. Those pieces are not connected to `main.py` until the wiring PR is merged, so the features below describe what works today.
+
 ## What Sara can do
 
 Core voice/clipboard actions
@@ -54,7 +56,7 @@ The following environment variables are required:
 
 - `OPENAI_API_KEY`: Your OpenAI API key (required if using OpenAI provider)
 - `MODEL_PROVIDER`: Choose the AI provider, defaults to: `openai`
-- `OPENAI_MODEL`: Optional override for the OpenAI chat model (defaults to `gpt-4o-mini`)
+- `OPENAI_MODEL`: Optional override for the OpenAI chat model (defaults to `gpt-5-mini`)
 - `ENABLE_MEMORY`: Enable memory functionality (`true` or `false`, defaults to `false`)
 
 #### LiveKit Configuration (for real-time audio)
@@ -152,16 +154,11 @@ python main.py
 
 ### Supported Models
 
-- **OpenAI**: defaults to `gpt-4o-mini` for chat and `whisper-1` for speech-to-text (override with env vars above)
+- **OpenAI**: defaults to `gpt-5-mini` for chat and `whisper-1` for speech-to-text (override with env vars above)
 
 ### Google Search Integration
 
-When using Gemini as the provider, the application automatically enhances responses with real-time web search when queries contain keywords like:
-
-- "current", "recent", "latest", "news", "today", "now", "update"
-
-This provides access to the most current information beyond the model's training cutoff date.
-
+Not currently active: `main.py` only creates an OpenAI client, so the Gemini web-search enhancement that used to be described here does not run. Gemini and Groq are only used for speech-to-text in `audio.py` (set `TRANSCRIPTION_PROVIDER`).
 
 ### LiveKit Integration
 
