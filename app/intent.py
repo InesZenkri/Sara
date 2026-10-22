@@ -29,7 +29,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Protocol
 
-ACTIONS = ("OPEN_APP", "CREATE_NOTE", "TYPE_TEXT")
+ACTIONS = ("OPEN_APP", "CREATE_NOTE", "EDIT_NOTE", "TYPE_TEXT")
 
 # Only these may fire before the sentence is finished. Typing needs confirmation
 # and notes need their full text, so both wait for the final transcript.
@@ -66,9 +66,38 @@ _NOTE_RE = re.compile(
 )
 _TYPE_RE = re.compile(r"^\s*(?:please\s+)?type\s+(.+)$", re.IGNORECASE)
 
+# Editing the note Sara made last: rename it, set its body, or add to its body.
+_EDIT_HINT_RE = re.compile(
+    r"\b(?:change|rename|edit|update|modify|set)\b.*\bnote\b"
+    r"|\b(?:set|change|make)\s+(?:the\s+)?(?:description|body|content)\s+(?:to|as)\b"
+    r"|\bnote(?:'s)?\s+(?:title|name|description|body)\b"
+    r"|\b(?:as|for)\s+(?:the\s+)?(?:description|body)\b"
+    r"|\b(?:append|add|put)\b.+\b(?:to|in|into)\s+(?:that|the|this|my|last)\s+note\b",
+    re.IGNORECASE,
+)
+_END = r"(?=\s+and\s+(?:then\s+)?(?:as|for|set|put|add|write|use|with)\b|[.!?]*$)"
+_TITLE_RE = re.compile(
+    r"\b(?:(?:title|name)\s+(?:to|as)|rename\s+(?:that|the|this|my|last)?\s*note\s+(?:to|as))\s+(.+?)" + _END,
+    re.IGNORECASE,
+)
+_BODY_RE = re.compile(
+    r"\b(?:as|for|with)\s+(?:the\s+)?(?:description|body|content|text)\s*[,:]?\s*"
+    r"(?:(?:put|use|set|add|write|insert)\s+)?(?:it\s+)?(?:(?:to|as)\s+)?(.+?)[.!?]*$"
+    r"|\b(?:set|change|make)\s+(?:the\s+)?(?:description|body|content)\s+(?:to|as)\s+(.+?)[.!?]*$",
+    re.IGNORECASE,
+)
+_APPEND_RE = re.compile(
+    r"\b(?:append|add|put)\s+(.+?)\s+(?:to|in|into)\s+(?:that|the|this|my|last)\s+note\b", re.IGNORECASE
+)
+
+
+def _fix_stt(text: str) -> str:
+    """Speech-to-text often hears "note" as "node"."""
+    return re.sub(r"\bnode\b", "note", text, flags=re.IGNORECASE)
+
 
 def extract_args(action: str, text: str) -> dict:
-    text = text.strip()
+    text = _fix_stt(text.strip())
     if action == "OPEN_APP":
         m = _OPEN_RE.search(text)
         return {"app": m.group(1).strip()} if m else {}
@@ -76,6 +105,23 @@ def extract_args(action: str, text: str) -> dict:
         m = _NOTE_RE.search(text)
         body = m.group(1).strip().rstrip(".") if m else ""
         return {"title": body[:60], "text": body} if body else {}
+    if action == "EDIT_NOTE":
+        args: dict = {}
+        m = _TITLE_RE.search(text)
+        if m:
+            args["title"] = m.group(1).strip()[:200]
+        m = _APPEND_RE.search(text)
+        if m:
+            args["text"] = m.group(1).strip()
+            args["mode"] = "append"
+        else:
+            m = _BODY_RE.search(text)
+            if m:
+                body = (m.group(1) or m.group(2) or "").strip()
+                if body:
+                    args["text"] = body
+                    args["mode"] = "set"
+        return args
     if action == "TYPE_TEXT":
         m = _TYPE_RE.search(text)
         return {"text": m.group(1).strip()} if m else {}
@@ -83,11 +129,13 @@ def extract_args(action: str, text: str) -> dict:
 
 
 def rule_action(text: str) -> Optional[str]:
-    t = text.strip().lower()
+    t = _fix_stt(text.strip().lower())
     if _TYPE_RE.search(t):
         return "TYPE_TEXT"
     if _NOTE_RE.search(t) or re.search(r"\b(?:create|make|add|write)\s+(?:a\s+|new\s+)*note\b", t):
         return "CREATE_NOTE"
+    if _EDIT_HINT_RE.search(t):
+        return "EDIT_NOTE"
     if re.search(r"\b(?:open|launch|start)\b", t):
         return "OPEN_APP"
     return None
