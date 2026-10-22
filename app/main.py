@@ -14,6 +14,7 @@ from bg_remove import remove_background
 from dotenv import load_dotenv
 from tts import CartesiaTTS
 from llm_config import llm_settings, instructor_mode_name
+import llm_models
 from tts_local import make_tts
 from facebook import post_photos_to_page
 from chess_analyzer import analyze_chess_position, ChessAnalysisError
@@ -60,6 +61,13 @@ def create_client():
 
 client_config = create_client()
 print(f"Using LLM model: {client_config['model']}")
+
+
+def llm_create(**kwargs):
+    """Call the language model, trying fallback models if the chosen one is unavailable for this key."""
+    return llm_models.create_with_fallback(client_config, llm_settings()["base_url"], **kwargs)
+
+
 
 monitor = ClipboardMonitor()
 monitor.start(log=True)
@@ -201,8 +209,7 @@ def on_hotword_detected_simple(text, audio):
     prompt += clipboard_str
 
     try:
-        chat_completion = client_config["instructor"].chat.completions.create(
-            model=client_config["model"],
+        chat_completion = llm_create(
             response_model=AssistantResponse,
             messages=[
                 {
@@ -236,7 +243,7 @@ INSTRUCTIONS:
         chat_completion = AssistantResponse(
             thinking="Error occurred during response generation",
             actionType=ActionType.SHORT_REPLY,
-            message="Sorry, I encountered an error processing your request."
+            message=llm_models.friendly_error(e, client_config["model"])
         )
 
     print(f"Response: {chat_completion}")
@@ -396,8 +403,7 @@ def on_hotword_detected_with_memory(text, audio):
 
     # Generate structured response
     try:
-        chat_completion = client_config["instructor"].chat.completions.create(
-            model=client_config["model"],
+        chat_completion = llm_create(
             response_model=AssistantResponse,
             messages=[
                 {
@@ -449,7 +455,7 @@ Remember that you are primariy interacting via short messages for quick confirma
         chat_completion = AssistantResponse(
             thinking="Error occurred during response generation",
             actionType=ActionType.SHORT_REPLY,
-            message="Sorry, I encountered an error processing your request."
+            message=llm_models.friendly_error(e, client_config["model"])
         )
 
     # Store the interaction in memory
@@ -609,9 +615,8 @@ Remember that you are primariy interacting via short messages for quick confirma
             follow_up_prompt += f"\n\nMemory Search Results:\n{search_results}"
             follow_up_prompt += f"\n\nPlease provide a helpful response based on the search results above. If the search results contain relevant information, use it to answer the user's question properly."
             
-            follow_up_completion = client_config["instructor"].chat.completions.create(
-                model=client_config["model"],
-                response_model=AssistantResponse,
+            follow_up_completion = llm_create(
+            response_model=AssistantResponse,
                 messages=[
                     {
                         "role": "system",

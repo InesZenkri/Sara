@@ -9,7 +9,7 @@ Nothing here needs a credit card. Keys go in `app/.env` on your Mac only (it is 
 ```
 SARA_LLM_API_KEY=<your Gemini key>
 SARA_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
-SARA_LLM_MODEL=gemini-2.5-flash
+SARA_LLM_MODEL=gemini-flash-latest
 SARA_INSTRUCTOR_MODE=json
 ```
 
@@ -24,6 +24,7 @@ SARA_INSTRUCTOR_MODE=json
 
 Notes, checked against the providers' docs (not run with real keys by the author):
 
+- Google limits the Gemini 2.5 models to accounts that already used them ("no longer available to new users"); new keys should use `gemini-flash-latest` or a newer Flash / Flash-Lite. Run `python llm_models.py` to list what your key sees. If a model is refused, Sara tries fallbacks (`SARA_LLM_FALLBACK_MODELS`, comma separated, to choose your own).
 - Model names change. If one is rejected, pick a current one from the provider's model list.
 - If structured output fails, try `SARA_INSTRUCTOR_MODE=json_schema` or `tools`. The default (unset) is unchanged from before.
 - Free-tier limits are per model and change; look at your AI Studio / Groq console. Do not turn on billing.
