@@ -262,3 +262,27 @@ def execute(
     if action == "TYPE_TEXT":
         return type_text(text, confirm)
     return MacResult(False, f"Unknown Mac action '{action}'", Risk.BLOCKED)
+
+
+# -- timing ---------------------------------------------------------------------
+# Wrap `execute` so every action prints how long it took. The slow part of a
+# Mac action is usually the app itself (first launch of Notes) or a macOS
+# permission prompt waiting for a click, not Sara.
+SLOW_ACTION_SECONDS = 3.0
+_execute_untimed = execute
+
+
+def execute(action: str, **kwargs) -> MacResult:  # noqa: F811
+    import time
+
+    t0 = time.monotonic()
+    res = _execute_untimed(action, **kwargs)
+    took = time.monotonic() - t0
+    print(f"[timing] {action} took {took * 1000:.0f} ms", flush=True)
+    if took >= SLOW_ACTION_SECONDS and not dry_run():
+        print(
+            "[timing] slow: the app is probably starting up, or macOS is waiting for you to allow "
+            "automation (System Settings > Privacy & Security > Automation). Later runs are faster.",
+            flush=True,
+        )
+    return res
