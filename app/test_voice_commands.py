@@ -9,7 +9,9 @@ Mac actions run in dry-run mode, so nothing touches the system.
 import os
 import sys
 import types
+import time
 import unittest
+from unittest import mock
 
 FRAME = 960  # 30 ms of 16 kHz 16-bit mono
 SPEECH = bytes([1]) * FRAME
@@ -36,6 +38,7 @@ def setUpModule():
     sys.modules["sounddevice"] = sd
     sys.modules["webrtcvad"] = wv
     os.environ["SARA_MAC_DRY_RUN"] = "true"
+    os.environ["SARA_MIN_RMS"] = "0"
     os.environ.pop("SARA_ALLOWED_APPS", None)
 
 
@@ -46,6 +49,7 @@ def tearDownModule():
         else:
             sys.modules[name] = mod
     os.environ.pop("SARA_MAC_DRY_RUN", None)
+    os.environ.pop("SARA_MIN_RMS", None)
 
 
 class Rig:
@@ -90,6 +94,105 @@ class Rig:
 
     def log(self):
         return self.controller.log
+
+
+class QuietAndTimingTests(unittest.TestCase):
+    def _listener(self, texts):
+        import overlay
+        import voice_commands as vc
+
+        controller = vc.VoiceController(
+            overlay=overlay.OverlayState(), legacy=lambda t, w: None, notify=lambda m: None, confirm=lambda q: True
+        )
+        calls = []
+
+        def stt(wav):
+            calls.append(1)
+            return texts
+
+        return controller, calls, vc.make_listener(controller, stt, partial_interval=float("inf"), threaded=False)
+
+    def test_wav_rms(self):
+        import struct
+        import voice_commands as vc
+
+        loud = b"\0" * 44 + struct.pack("<100h", *([3000, -3000] * 50))
+        self.assertGreater(vc.wav_rms(loud), 2900)
+        self.assertEqual(vc.wav_rms(b"\0" * 44), 0.0)
+
+    def test_quiet_audio_never_reaches_the_transcriber(self):
+        with mock.patch.dict(os.environ, {"SARA_MIN_RMS": "1000"}):
+            controller, calls, listener = self._listener("sara open notes")
+            for _ in range(60):
+                listener._process_frame(SPEECH)  # level 257, under the 1000 limit
+            for _ in range(60):
+                listener._process_frame(SILENCE)
+        self.assertEqual(calls, [])
+        self.assertEqual(controller.log, [])
+
+    def test_empty_transcript_is_skipped_and_action_is_logged(self):
+        controller, calls, listener = self._listener("   ")
+        for _ in range(60):
+            listener._process_frame(SPEECH)
+        for _ in range(60):
+            listener._process_frame(SILENCE)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(controller.log, [])
+        import io
+        from contextlib import redirect_stdout
+
+        controller2, calls2, listener2 = self._listener("Sara, open Notes.")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            for _ in range(60):
+                listener2._process_frame(SPEECH)
+            for _ in range(60):
+                listener2._process_frame(SILENCE)
+        out = buf.getvalue()
+        self.assertIn("[action] OPEN_APP ok: [dry run] would open Notes", out)
+        self.assertIn("STT", out)
+        self.assertIn("intent+action", out)
+
+
+class RobustDefaultTests(unittest.TestCase):
+    def test_local_stt_has_no_partials_by_default(self):
+        import voice_commands as vc
+        with mock.patch.dict(os.environ, {"TRANSCRIPTION_PROVIDER": "local"}, clear=True):
+            self.assertEqual(vc.partial_interval_from_env(), float("inf"))
+        with mock.patch.dict(os.environ, {"TRANSCRIPTION_PROVIDER": "local", "SARA_PARTIAL_INTERVAL": "2"}, clear=True):
+            self.assertEqual(vc.partial_interval_from_env(), 2.0)
+        with mock.patch.dict(os.environ, {"TRANSCRIPTION_PROVIDER": "groq"}, clear=True):
+            self.assertEqual(vc.partial_interval_from_env(), float("inf"))
+        with mock.patch.dict(os.environ, {"TRANSCRIPTION_PROVIDER": "openai"}, clear=True):
+            self.assertEqual(vc.partial_interval_from_env(), vc.PARTIAL_INTERVAL)
+
+    def test_final_transcription_does_not_block_the_audio_loop(self):
+        import threading
+        import overlay
+        import voice_commands as vc
+
+        release = threading.Event()
+        heard = []
+
+        def slow(wav):
+            release.wait(5)
+            return "sara open notes"
+
+        controller = vc.VoiceController(
+            overlay=overlay.OverlayState(), legacy=lambda t, w: None, notify=lambda m: None, confirm=lambda q: True
+        )
+        listener = vc.make_listener(controller, slow, partial_interval=float("inf"), threaded=True)
+        for _ in range(60):
+            listener._process_frame(SPEECH)
+        t0 = time.time()
+        for _ in range(40):
+            listener._process_frame(SILENCE)  # speech ends here; the transcriber is stuck
+        self.assertLess(time.time() - t0, 1.0, "the loop must not wait for the transcriber")
+        self.assertEqual(controller.log, [])
+        release.set()
+        for th in list(listener.final_threads):
+            th.join(5)
+        self.assertTrue(any(x[1] == "OPEN_APP" for x in controller.log), controller.log)
 
 
 class PipelineTests(unittest.TestCase):

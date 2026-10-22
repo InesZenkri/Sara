@@ -35,9 +35,17 @@ controller = VoiceController(
     notify=notify_user,
     hotword=hotword,
 )
+if gui is None:  # no window: show the same status in the terminal
+    state.subscribe(lambda s: print(f"[overlay] {s.title} {s.text}".rstrip(), flush=True) if s.visible else None)
+try:
+    import sounddevice as sd
+
+    print(f"Microphone: {sd.query_devices(kind='input')['name']}", flush=True)
+except Exception as exc:
+    print(f"Could not read the default microphone: {exc}", flush=True)
 listener = make_listener(controller, transcribe)
 listener.start()
-print(f"Say '{hotword}, open notes'. Say '{hotword}, cancel' to cancel. Ctrl+C to stop.")
+print(f"Say '{hotword}, open notes'. Say '{hotword}, cancel' to cancel. Ctrl+C to stop.", flush=True)
 
 try:
     if gui is not None:
