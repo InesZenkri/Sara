@@ -41,7 +41,7 @@ def _log(msg: str) -> None:
     print(msg, flush=True)
 
 
-MIN_RMS = 200  # int16 RMS under this is treated as silence (fan hiss, room tone)
+MIN_RMS = 40  # int16 RMS under this is treated as silence (fan hiss, room tone)
 
 
 def _min_rms() -> float:
@@ -136,6 +136,7 @@ class VoiceController:
         legacy: Optional[Callable[[str, Optional[bytes]], None]] = None,
         notify: Optional[Callable[[str], None]] = None,
         confirm: Optional[Callable[[str], bool]] = dialog_confirm,
+        on_quit: Optional[Callable[[], None]] = None,
         execute: Callable[..., mac_control.MacResult] = mac_control.execute,
         hotword: str = "sara",
         backend=None,
@@ -149,6 +150,7 @@ class VoiceController:
         self.legacy = legacy
         self.notify = notify
         self.confirm = confirm
+        self.on_quit = on_quit  # called after "Sara, bye": stop the app
         self.execute = execute
         self.hotword = hotword
         self.log: list = []  # (kind, detail) records, handy for tests and debugging
@@ -212,6 +214,8 @@ class VoiceController:
         kind, cmd = command_rules.classify_utterance(text, self.hotword)
         if kind == "ignore":
             return
+        if kind == "quit":
+            return  # only a finished utterance can stop Sara
         if kind == "cancel":
             self._cancelled = True
             self.overlay.done("Cancelled")
@@ -230,6 +234,15 @@ class VoiceController:
                 if not self._cancelled:
                     self.overlay.hide()
                 return "cancelled" if self._cancelled else "ignored"
+            if kind == "quit":
+                self.overlay.done("Bye")
+                self.log.append(("quit",))
+                if self.on_quit is not None:
+                    try:
+                        self.on_quit()
+                    except Exception as exc:
+                        print(f"Quit handler failed: {exc}", flush=True)
+                return "quit"
             if cancelled:
                 self.overlay.done("Cancelled")
                 return "cancelled"
