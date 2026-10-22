@@ -123,6 +123,7 @@ class TkOverlay:
         self._tk = tk
         self._q: "queue.Queue[OverlaySnapshot]" = queue.Queue()
         self._hide_job = None
+        self._stop = False
         self.root = tk.Tk()
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
@@ -141,8 +142,16 @@ class TkOverlay:
         state.subscribe(self._q.put)  # queue.Queue.put is thread-safe
         self.root.after(50, self._poll)
 
+    def request_stop(self) -> None:
+        """Ask the window loop to end. Safe to call from any thread."""
+        self._stop = True
+
     def _poll(self) -> None:
         import queue
+
+        if self._stop:
+            self.root.quit()
+            return
 
         try:
             while True:
