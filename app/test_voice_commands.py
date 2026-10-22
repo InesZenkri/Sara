@@ -9,7 +9,9 @@ Mac actions run in dry-run mode, so nothing touches the system.
 import os
 import sys
 import types
+import time
 import unittest
+from unittest import mock
 
 FRAME = 960  # 30 ms of 16 kHz 16-bit mono
 SPEECH = bytes([1]) * FRAME
@@ -90,6 +92,45 @@ class Rig:
 
     def log(self):
         return self.controller.log
+
+
+class RobustDefaultTests(unittest.TestCase):
+    def test_local_stt_has_no_partials_by_default(self):
+        import voice_commands as vc
+        with mock.patch.dict(os.environ, {"TRANSCRIPTION_PROVIDER": "local"}, clear=True):
+            self.assertEqual(vc.partial_interval_from_env(), float("inf"))
+        with mock.patch.dict(os.environ, {"TRANSCRIPTION_PROVIDER": "local", "SARA_PARTIAL_INTERVAL": "2"}, clear=True):
+            self.assertEqual(vc.partial_interval_from_env(), 2.0)
+        with mock.patch.dict(os.environ, {"TRANSCRIPTION_PROVIDER": "groq"}, clear=True):
+            self.assertEqual(vc.partial_interval_from_env(), vc.PARTIAL_INTERVAL)
+
+    def test_final_transcription_does_not_block_the_audio_loop(self):
+        import threading
+        import overlay
+        import voice_commands as vc
+
+        release = threading.Event()
+        heard = []
+
+        def slow(wav):
+            release.wait(5)
+            return "sara open notes"
+
+        controller = vc.VoiceController(
+            overlay=overlay.OverlayState(), legacy=lambda t, w: None, notify=lambda m: None, confirm=lambda q: True
+        )
+        listener = vc.make_listener(controller, slow, partial_interval=float("inf"), threaded=True)
+        for _ in range(60):
+            listener._process_frame(SPEECH)
+        t0 = time.time()
+        for _ in range(40):
+            listener._process_frame(SILENCE)  # speech ends here; the transcriber is stuck
+        self.assertLess(time.time() - t0, 1.0, "the loop must not wait for the transcriber")
+        self.assertEqual(controller.log, [])
+        release.set()
+        for th in list(listener.final_threads):
+            th.join(5)
+        self.assertTrue(any(x[1] == "OPEN_APP" for x in controller.log), controller.log)
 
 
 class PipelineTests(unittest.TestCase):
