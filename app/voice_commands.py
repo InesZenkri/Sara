@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 import time
 from typing import Callable, Optional
@@ -40,6 +41,32 @@ def _log(msg: str) -> None:
     print(msg, flush=True)
 
 
+MIN_RMS = 200  # int16 RMS under this is treated as silence (fan hiss, room tone)
+
+
+def _min_rms() -> float:
+    try:
+        return float(os.getenv("SARA_MIN_RMS", str(MIN_RMS)))
+    except ValueError:
+        return float(MIN_RMS)
+
+
+def wav_rms(wav: bytes) -> float:
+    """RMS level of a 16-bit mono WAV (44-byte header), 0.0 if empty."""
+    import array
+    import math
+
+    pcm = wav[44:]
+    pcm = pcm[: len(pcm) // 2 * 2]
+    if not pcm:
+        return 0.0
+    samples = array.array("h")
+    samples.frombytes(pcm)
+    if sys.byteorder == "big":
+        samples.byteswap()
+    return math.sqrt(sum(s * s for s in samples) / len(samples))
+
+
 def _provider() -> str:
     return (
         os.getenv("TRANSCRIPTION_PROVIDER") or os.getenv("STT_PROVIDER") or os.getenv("MODEL_PROVIDER") or "openai"
@@ -49,11 +76,11 @@ def _provider() -> str:
 def partial_interval_from_env(default: float = PARTIAL_INTERVAL) -> float:
     """SARA_PARTIAL_INTERVAL in seconds. 0 (or negative) turns partial transcripts off,
     so audio is transcribed only once per command. Use 3 or more with rate-limited
-    cloud speech-to-text. Unset: partials are OFF for local speech-to-text (a CPU
-    transcription every 0.8 s cannot keep up) and every PARTIAL_INTERVAL seconds otherwise."""
+    cloud speech-to-text. Unset: partials are OFF for local and Groq speech-to-text (a CPU
+    transcription every 0.8 s cannot keep up, Groq free tier allows about 20 requests a minute) and every PARTIAL_INTERVAL seconds otherwise."""
     raw = (os.getenv("SARA_PARTIAL_INTERVAL") or "").strip()
     if not raw:
-        return float("inf") if _provider() in ("local", "faster-whisper") else default
+        return float("inf") if _provider() in ("local", "faster-whisper", "groq") else default
     try:
         value = float(raw)
     except ValueError:
@@ -132,6 +159,7 @@ class VoiceController:
             confirm=self.confirm,
         )
         self.log.append(("early" if early else "final", g.action, res.ok, res.message))
+        _log(f"[{'early ' if early else ''}action] {g.action} {'ok' if res.ok else 'FAILED'}: {res.message}")
         if res.ok:
             self.overlay.done(res.message)
         else:
@@ -194,7 +222,7 @@ def make_transcriber() -> Optional[Callable[[bytes], str]]:
 
     TRANSCRIPTION_PROVIDER: openai (default), groq, or local (faster-whisper on this
     machine: free, no key, no rate limit; `pip install faster-whisper`, model downloads
-    on first use). Local options: SARA_WHISPER_MODEL (default "base"), SARA_WHISPER_LANGUAGE
+    on first use). Local options: SARA_WHISPER_MODEL (default "base.en"; "tiny.en" is faster, "small.en" more accurate), SARA_WHISPER_LANGUAGE
     (default "en"; "auto" detects the language, slower and less reliable on short commands),
     SARA_WHISPER_THREADS (CPU threads, default 4, so the Mac stays usable)."""
     provider = _provider()
@@ -203,7 +231,11 @@ def make_transcriber() -> Optional[Callable[[bytes], str]]:
 
         from faster_whisper import WhisperModel
 
-        name = os.getenv("SARA_WHISPER_MODEL", "base")
+        language = (os.getenv("SARA_WHISPER_LANGUAGE") or "en").strip()
+        if language.lower() in ("", "auto"):
+            language = None
+        # English-only models are smaller and faster; use a multilingual one only for auto-detect
+        name = os.getenv("SARA_WHISPER_MODEL") or ("base.en" if language == "en" else "base")
         try:
             threads = max(1, int(os.getenv("SARA_WHISPER_THREADS", "4")))
         except ValueError:
@@ -211,15 +243,13 @@ def make_transcriber() -> Optional[Callable[[bytes], str]]:
         _log(f"Loading Whisper model '{name}' (first run downloads it)...")
         model = WhisperModel(name, device="cpu", compute_type="int8", cpu_threads=threads)
         _log("Whisper model ready.")
-        language = (os.getenv("SARA_WHISPER_LANGUAGE") or "en").strip()
-        if language.lower() in ("", "auto"):
-            language = None
         lock = threading.Lock()  # one transcription at a time on the shared model
 
         def local_t(wav: bytes) -> str:
             with lock:
                 segments, _ = model.transcribe(
-                    io.BytesIO(wav), language=language, beam_size=1, initial_prompt="Sara, open Notes."
+                    io.BytesIO(wav), language=language, beam_size=1, initial_prompt="Sara, open Notes.",
+                    vad_filter=True, condition_on_previous_text=False
                 )
                 return " ".join(s.text.strip() for s in segments).strip()
 
@@ -228,9 +258,15 @@ def make_transcriber() -> Optional[Callable[[bytes], str]]:
         from groq import Groq
 
         client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        gmodel = os.getenv("SARA_GROQ_STT_MODEL", "whisper-large-v3")
+        lang = (os.getenv("SARA_WHISPER_LANGUAGE") or "en").strip()
+        lang = None if lang.lower() in ("", "auto") else lang
 
         def groq_t(wav: bytes) -> str:
-            return client.audio.transcriptions.create(file=("audio.wav", wav), model="whisper-large-v3").text or ""
+            kwargs = {"language": lang} if lang else {}
+            return (
+                client.audio.transcriptions.create(file=("audio.wav", wav), model=gmodel, **kwargs).text or ""
+            )
 
         return groq_t
     if provider == "openai":
@@ -292,7 +328,10 @@ def make_listener(
 
         def _partial(self, utt: int, pcm: bytes):
             try:
-                text = transcribe(self._pcm_to_wav_bytes(pcm))
+                wav = self._pcm_to_wav_bytes(pcm)
+                if wav_rms(wav) < _min_rms():
+                    return
+                text = transcribe(wav)
                 if utt == self._utt:  # drop results from an utterance that already ended
                     controller.on_partial(text)
             except Exception as exc:
@@ -318,19 +357,32 @@ def make_listener(
 
         def _final(self, wav_bytes):
             with self._final_lock:
+                level = wav_rms(wav_bytes)
+                if level < _min_rms():
+                    _log(f"[skipped] too quiet (level {level:.0f}, SARA_MIN_RMS={_min_rms():.0f})")
+                    controller.overlay.hide()
+                    return
+                t0 = time.monotonic()
                 try:
                     text = transcribe(wav_bytes)
                 except Exception as exc:
                     _log(f"Final transcription failed: {exc}")
                     controller.overlay.error("Could not transcribe")
                     return
-                _log(f"Heard: {text}")
+                t1 = time.monotonic()
+                if not (text or "").strip():
+                    _log(f"[skipped] empty transcript (STT {(t1 - t0) * 1000:.0f} ms)")
+                    controller.overlay.hide()
+                    return
+                _log(f"Heard: {text}  (STT {(t1 - t0) * 1000:.0f} ms)")
                 try:
                     result = controller.on_final(text, wav_bytes)
                 except Exception as exc:
                     _log(f"Handling failed: {exc}")
                     return
-                _log(f"  -> {result}" + (" (say the wake word first, e.g. 'Sara, open Notes')" if result == "ignored" else ""))
+                t2 = time.monotonic()
+                hint = " (say the wake word first, e.g. 'Sara, open Notes')" if result == "ignored" else ""
+                _log(f"  -> {result}{hint}  (intent+action {(t2 - t1) * 1000:.0f} ms)")
 
         def _process_frame(self, frame_bytes):
             super()._process_frame(frame_bytes)
