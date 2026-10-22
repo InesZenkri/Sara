@@ -4,7 +4,7 @@ Big Berlin Hack 2025, making your clipboard a supertool
 
 Sara is an AI-powered macOS assistant that enhances your clipboard functionality. It can read and modify text, create memes, remove image backgrounds, and remember your preferences using persistent memory. Powered by LiveKit for real-time audio processing and Cartesia for voice synthesis, Sara provides a seamless voice-enabled experience that Siri could have been to help you with everyday tasks.
 
-> **Status (Oct 2026):** Sara is a hackathon project (Big Berlin Hack 2025) that works on macOS only and has not been tested on other systems. It needs your own API keys (see Setup). A "Sara v2: acts while you speak" upgrade is in progress as separate pull requests: a Mac control layer (open apps, create notes, confirmed typing), streaming intent detection, command-boundary rules, and an optional overlay. Those pieces are not connected to `main.py` until the wiring PR is merged, so the features below describe what works today.
+
 
 ## What Sara can do
 
