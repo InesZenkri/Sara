@@ -30,6 +30,34 @@ CANCEL_PHRASES = (
     "laisse tomber",
 )
 
+# Said after the wake word to stop Sara for good ("Sara, bye"). The WHOLE command
+# must be one of these, so "thanks" inside a longer command never quits.
+QUIT_PHRASES = (
+    "bye",
+    "bye bye",
+    "goodbye",
+    "good bye",
+    "see you",
+    "see you later",
+    "thanks",
+    "thank you",
+    "thank you very much",
+    "thanks a lot",
+    "thx",
+    "that was it",
+    "that is it",
+    "thats it",
+    "that s it",
+    "that's it",
+    "that will be all",
+    "that ll be all",
+    "that'll be all",
+    "stop listening",
+    "go to sleep",
+    "quit",
+    "exit",
+)
+
 # Spellings an STT engine may produce for "sara".
 SARA_VARIANTS = ("sara", "sarah", "sera", "zara", "sarra", "saara", "sarrah", "sahra")
 _LEADERS = ("", "hey", "hi", "ok", "okay", "yo", "hello", "hallo")
@@ -70,6 +98,16 @@ def is_cancel(text: str) -> bool:
     t = re.sub(r"^(?:sara|please|ok|okay|hey)\s+", "", t)
     t = re.sub(r"\s+(?:please|sara)$", "", t)
     return t in CANCEL_PHRASES
+
+
+def is_quit(text: str) -> bool:
+    """True if the whole utterance (after the wake word) is a goodbye phrase."""
+    t = " ".join(_words(text))
+    if not t:
+        return False
+    t = re.sub(r"^(?:sara|please|ok|okay|hey)\s+", "", t)
+    t = re.sub(r"\s+(?:please|sara)$", "", t)
+    return t in QUIT_PHRASES
 
 
 class Endpointer:
@@ -114,12 +152,14 @@ class Endpointer:
 
 
 def classify_utterance(text: str, hotword: str = "sara") -> Tuple[str, str]:
-    """('ignore'|'wake'|'cancel'|'command', command_text)."""
+    """('ignore'|'wake'|'quit'|'cancel'|'command', command_text)."""
     rest = split_wake_word(text, hotword)
     if rest is None:
         return "ignore", ""
     if not rest:
         return "wake", ""
+    if is_quit(rest):
+        return "quit", ""
     if is_cancel(rest):
         return "cancel", ""
     return "command", rest
