@@ -13,6 +13,8 @@ from pymacnotifier import MacNotifier
 from bg_remove import remove_background
 from dotenv import load_dotenv
 from tts import CartesiaTTS
+from llm_config import llm_settings, instructor_mode_name
+from tts_local import make_tts
 from facebook import post_photos_to_page
 from chess_analyzer import analyze_chess_position, ChessAnalysisError
 
@@ -30,15 +32,23 @@ else:
     print("Memory functionality disabled")
 
 def create_client():
-    """Create and return the OpenAI client configuration."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set in the environment.")
+    """Create and return the LLM client configuration (OpenAI or any OpenAI-compatible provider).
 
-    model_name = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+    Settings come from llm_config: SARA_LLM_* or OPENAI_* environment variables.
+    """
+    settings = llm_settings()
+    api_key = settings["api_key"]
+    if not api_key:
+        raise RuntimeError("No LLM API key set. Set OPENAI_API_KEY (or SARA_LLM_API_KEY) in your .env.")
+
+    model_name = settings["model"]
     try:
-        openai_client = OpenAI(api_key=api_key)
-        instructor_client = instructor.from_openai(openai_client)
+        openai_client = OpenAI(api_key=api_key, base_url=settings["base_url"])
+        mode_name = instructor_mode_name()
+        if mode_name:
+            instructor_client = instructor.from_openai(openai_client, mode=getattr(instructor.Mode, mode_name))
+        else:
+            instructor_client = instructor.from_openai(openai_client)
         return {
             "instructor": instructor_client,
             "native": openai_client,
@@ -46,10 +56,10 @@ def create_client():
             "provider": "openai",
         }
     except Exception as exc:
-        raise RuntimeError(f"Failed to initialize OpenAI client: {exc}") from exc
+        raise RuntimeError(f"Failed to initialize LLM client: {exc}") from exc
 
 client_config = create_client()
-print(f"Using OpenAI model: {client_config['model']}")
+print(f"Using LLM model: {client_config['model']}")
 
 monitor = ClipboardMonitor()
 monitor.start(log=True)
@@ -57,13 +67,8 @@ monitor.start(log=True)
 # Initialize the Mac notifier with a default title
 notifier = MacNotifier(default_title="Sara")
 
-# Initialize TTS client
-try:
-    tts_client = CartesiaTTS()
-    print("Cartesia TTS initialized successfully")
-except Exception as e:
-    print(f"Failed to initialize TTS: {e}")
-    tts_client = None
+# Initialize TTS client: Cartesia if a key is set, otherwise the macOS `say` voice (see tts_local.py)
+tts_client = make_tts()
 
 
 class CopyTextToClipboardResponse(BaseModel):
