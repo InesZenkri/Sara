@@ -151,7 +151,7 @@ class QuietAndTimingTests(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("[action] OPEN_APP ok: [dry run] would open Notes", out)
         self.assertIn("STT", out)
-        self.assertIn("intent+action", out)
+        self.assertIn("total", out)
 
 
 class RobustDefaultTests(unittest.TestCase):
@@ -277,16 +277,28 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(res[0][2])
         self.assertIn("would type", res[0][3])
 
-    def test_app_not_on_allow_list_is_refused_and_reported(self):
+    def test_app_not_on_allow_list_is_not_a_mac_command(self):
+        # "open terminal" is not something Sara may open: it falls through to the chat assistant
+        # instead of failing out loud (which also made her hear and transcribe her own error).
         r = Rig([(0, "sara open terminal")])
         r.feed(SPEECH, 40)
         r.feed(SILENCE, 40)
-        res = [x for x in r.log() if x[0] == "final"]
-        self.assertEqual(len(res), 1)
-        self.assertFalse(res[0][2])
-        self.assertIn("not on my allowed apps", res[0][3])
-        self.assertTrue(any("allowed apps" in n for n in r.notes))
-        self.assertIn("error", r.phases)
+        self.assertEqual([x for x in r.log() if x[0] in ("early", "final")], [])
+        self.assertEqual(r.legacy_calls, ["sara open terminal"])
+
+    def test_nothing_is_heard_while_sara_speaks(self):
+        import echo_guard
+
+        r = Rig([(0, "sara open notes")])
+        echo_guard.guard.begin("Created note")
+        try:
+            r.feed(SPEECH, 60)
+            r.feed(SILENCE, 60)
+        finally:
+            echo_guard.guard.end()
+            echo_guard.guard._quiet_until = float("-inf")
+        self.assertEqual(r.calls, [])
+        self.assertEqual(r.log(), [])
 
     def test_dry_run_runs_no_subprocess(self):
         import mac_control
