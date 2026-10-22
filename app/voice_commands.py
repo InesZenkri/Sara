@@ -86,6 +86,18 @@ def partial_interval_from_env(default: float = PARTIAL_INTERVAL) -> float:
     except ValueError:
         return default
     return float("inf") if value <= 0 else value
+FOLLOWUP_SECONDS = 10.0  # after a command, the next one may skip the wake word for this long
+
+
+def followup_seconds_from_env(default: float = FOLLOWUP_SECONDS) -> float:
+    """SARA_FOLLOWUP_SECONDS. 0 turns the follow-up window off (wake word always needed)."""
+    raw = (os.getenv("SARA_FOLLOWUP_SECONDS") or "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else default
+    except ValueError:
+        return default
+
+
 MIN_PARTIAL_SECONDS = 0.6  # do not transcribe less audio than this
 
 
@@ -94,6 +106,8 @@ def _describe(g: IntentGuess) -> str:
         return f"Opening {g.args.get('app', '?')}"
     if g.action == "CREATE_NOTE":
         return "Creating a note"
+    if g.action == "EDIT_NOTE":
+        return "Editing the note"
     if g.action == "TYPE_TEXT":
         return "Typing"
     return "Working"
@@ -122,17 +136,19 @@ class VoiceController:
         legacy: Optional[Callable[[str, Optional[bytes]], None]] = None,
         notify: Optional[Callable[[str], None]] = None,
         confirm: Optional[Callable[[str], bool]] = dialog_confirm,
-        on_quit: Optional[Callable[[], None]] = None,
         execute: Callable[..., mac_control.MacResult] = mac_control.execute,
         hotword: str = "sara",
         backend=None,
         clock: Callable[[], float] = time.monotonic,
+        followup_seconds: Optional[float] = None,
     ):
+        self._clock = clock
+        self.followup_seconds = followup_seconds_from_env() if followup_seconds is None else followup_seconds
+        self._followup_until = float("-inf")
         self.overlay = overlay or OverlayState()
         self.legacy = legacy
         self.notify = notify
         self.confirm = confirm
-        self.on_quit = on_quit  # called after "Sara, bye": stop the app
         self.execute = execute
         self.hotword = hotword
         self.log: list = []  # (kind, detail) records, handy for tests and debugging
@@ -149,6 +165,21 @@ class VoiceController:
     def start_utterance(self) -> None:
         self._reset()
 
+    def _open_followup(self) -> None:
+        if self.followup_seconds > 0:
+            self._followup_until = self._clock() + self.followup_seconds
+
+    def _classify(self, text: str):
+        """Like classify_utterance, but for a short time after a command a Mac command
+        is accepted without the wake word ("Sara, open notes" ... "rename that note")."""
+        kind, cmd = command_rules.classify_utterance(text, self.hotword)
+        if kind == "ignore" and self._clock() <= self._followup_until:
+            g = self.runner.backend.classify(text)
+            if g.action and g.confidence >= self.runner.threshold:
+                _log(f"[follow-up] accepted without wake word: {text.strip()!r}")
+                return "command", text.strip()
+        return kind, cmd
+
     # -- actions -----------------------------------------------------------
     def _fire(self, g: IntentGuess, early: bool) -> None:
         self._fired += 1
@@ -158,8 +189,10 @@ class VoiceController:
             app=g.args.get("app", ""),
             title=g.args.get("title", ""),
             text=g.args.get("text", ""),
+            mode=g.args.get("mode", "set"),
             confirm=self.confirm,
         )
+        self._open_followup()
         self.log.append(("early" if early else "final", g.action, res.ok, res.message))
         _log(f"[{'early ' if early else ''}action] {g.action} {'ok' if res.ok else 'FAILED'}: {res.message}")
         if res.ok:
@@ -179,8 +212,6 @@ class VoiceController:
         kind, cmd = command_rules.classify_utterance(text, self.hotword)
         if kind == "ignore":
             return
-        if kind == "quit":
-            return  # only a finished utterance can stop Sara
         if kind == "cancel":
             self._cancelled = True
             self.overlay.done("Cancelled")
@@ -192,26 +223,18 @@ class VoiceController:
 
     def on_final(self, text: str, wav: Optional[bytes] = None) -> str:
         """Returns what happened: ignored | wake | cancelled | mac | legacy | none."""
-        kind, cmd = command_rules.classify_utterance(text, self.hotword)
+        kind, cmd = self._classify(text)
         cancelled = self._cancelled or kind == "cancel"
         try:
             if kind == "ignore":
                 if not self._cancelled:
                     self.overlay.hide()
                 return "cancelled" if self._cancelled else "ignored"
-            if kind == "quit":
-                self.overlay.done("Bye")
-                self.log.append(("quit",))
-                if self.on_quit is not None:
-                    try:
-                        self.on_quit()
-                    except Exception as exc:
-                        print(f"Quit handler failed: {exc}", flush=True)
-                return "quit"
             if cancelled:
                 self.overlay.done("Cancelled")
                 return "cancelled"
             if kind == "wake":
+                self._open_followup()
                 self.overlay.done("Yes?")
                 return "wake"
             self.overlay.heard(cmd)
