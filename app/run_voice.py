@@ -8,6 +8,7 @@ Optional: SARA_OVERLAY=true for the floating overlay.
 `python main.py` still works exactly as before.
 """
 import sys
+import threading
 import time
 
 import command_rules
@@ -29,7 +30,29 @@ if transcribe is None:
     sys.exit(1)
 
 state, gui = make_overlay()
+stop_event = threading.Event()
+
+
+def say_goodbye_and_stop() -> None:
+    """Called after "Sara, bye": stop the microphone, say a short goodbye, end the program."""
+    try:
+        listener.stop()
+    except Exception:
+        pass
+    try:
+        from main import speak_response
+
+        speak_response("Bye!")  # does nothing if there is no voice
+    except Exception:
+        pass
+    print("Bye.", flush=True)
+    if gui is not None:
+        gui.request_stop()
+    stop_event.set()
+
+
 controller = VoiceController(
+    on_quit=say_goodbye_and_stop,
     overlay=state,
     legacy=on_hotword_detected,  # anything that is not a Mac command goes to the old clipboard assistant
     notify=notify_user,
@@ -45,14 +68,14 @@ except Exception as exc:
     print(f"Could not read the default microphone: {exc}", flush=True)
 listener = make_listener(controller, transcribe)
 listener.start()
-print(f"Say '{hotword}, open notes'. Say '{hotword}, cancel' to cancel. Ctrl+C to stop.", flush=True)
+print(f"Say '{hotword}, open notes'. Say '{hotword}, cancel' to cancel. Say '{hotword}, bye' (or 'that was it', 'thanks') to stop. Ctrl+C also works.", flush=True)
 
 try:
     if gui is not None:
         gui.run()  # Tk must own the main thread
     else:
-        while True:
-            time.sleep(1)
+        while not stop_event.wait(0.5):
+            pass
 except KeyboardInterrupt:
     pass
 finally:
