@@ -1,0 +1,18 @@
+# Optional extras. Install only what you use:  pip install -r requirements-optional.txt
+# Each one needs its own key or setup, none is needed for the default free/local setup.
+
+# Local speech-to-text, free, no key (MIT). Used with TRANSCRIPTION_PROVIDER=local
+faster-whisper
+
+# Groq speech-to-text, TRANSCRIPTION_PROVIDER=groq (needs GROQ_API_KEY)
+groq
+
+# Cartesia voice replies, SARA_TTS=cartesia (needs CARTESIA_API_KEY)
+cartesia
+
+# LiveKit hotword path, USE_LIVEKIT=true
+livekit
+livekit-agents
+
+# Long-term memory, ENABLE_MEMORY=true
+chromadb
