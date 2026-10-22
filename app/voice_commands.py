@@ -30,6 +30,7 @@ import time
 from typing import Callable, Optional
 
 import command_rules
+import echo_guard
 import mac_control
 from intent import IntentGuess, RuleBackend, StreamingIntentRunner
 from overlay import OverlayState
@@ -142,7 +143,10 @@ class VoiceController:
         backend=None,
         clock: Callable[[], float] = time.monotonic,
         followup_seconds: Optional[float] = None,
+        async_notify: bool = False,
     ):
+        self.async_notify = async_notify  # speak/notify in the background so the action is not delayed
+        self.timings: dict = {}
         self._clock = clock
         self.followup_seconds = followup_seconds_from_env() if followup_seconds is None else followup_seconds
         self._followup_until = float("-inf")
@@ -186,6 +190,7 @@ class VoiceController:
     def _fire(self, g: IntentGuess, early: bool) -> None:
         self._fired += 1
         self.overlay.doing(_describe(g))
+        t_action = time.monotonic()
         res = self.execute(
             g.action,
             app=g.args.get("app", ""),
@@ -194,6 +199,7 @@ class VoiceController:
             mode=g.args.get("mode", "set"),
             confirm=self.confirm,
         )
+        self.timings["action_ms"] = (time.monotonic() - t_action) * 1000
         self._open_followup()
         self.log.append(("early" if early else "final", g.action, res.ok, res.message))
         _log(f"[{'early ' if early else ''}action] {g.action} {'ok' if res.ok else 'FAILED'}: {res.message}")
@@ -202,10 +208,19 @@ class VoiceController:
         else:
             self.overlay.error(res.message)
         if self.notify and (not res.ok or res.executed):
-            try:
-                self.notify(res.message)
-            except Exception:
-                pass
+            t_notify = time.monotonic()
+
+            def _notify(message=res.message):
+                try:
+                    self.notify(message)
+                except Exception:
+                    pass
+
+            if self.async_notify:
+                threading.Thread(target=_notify, daemon=True).start()
+            else:
+                _notify()
+            self.timings["notify_ms"] = (time.monotonic() - t_notify) * 1000
 
     # -- transcript events ---------------------------------------------------
     def on_partial(self, text: str) -> None:
@@ -423,7 +438,12 @@ def make_listener(
                     _log(f"[skipped] empty transcript (STT {(t1 - t0) * 1000:.0f} ms)")
                     controller.overlay.hide()
                     return
+                if echo_guard.guard.is_echo(text):
+                    _log(f"[skipped] sounds like Sara's own voice: {text!r}")
+                    controller.overlay.hide()
+                    return
                 _log(f"Heard: {text}  (STT {(t1 - t0) * 1000:.0f} ms)")
+                controller.timings.clear()
                 try:
                     result = controller.on_final(text, wav_bytes)
                 except Exception as exc:
@@ -431,9 +451,17 @@ def make_listener(
                     return
                 t2 = time.monotonic()
                 hint = " (say the wake word first, e.g. 'Sara, open Notes')" if result == "ignored" else ""
-                _log(f"  -> {result}{hint}  (intent+action {(t2 - t1) * 1000:.0f} ms)")
+                parts = [f"{k[:-3]} {v:.0f} ms" for k, v in controller.timings.items()]
+                parts.append(f"total {(t2 - t1) * 1000:.0f} ms")
+                _log(f"  -> {result}{hint}  ({', '.join(parts)})")
 
         def _process_frame(self, frame_bytes):
+            if echo_guard.guard.muted():  # Sara is speaking: do not listen to herself
+                self._speech = False
+                self._start_counter = 0
+                self._end_counter = 0
+                self._segment.clear()
+                return
             super()._process_frame(frame_bytes)
             if not self._speech:
                 return
