@@ -33,7 +33,21 @@ import mac_control
 from intent import IntentGuess, RuleBackend, StreamingIntentRunner
 from overlay import OverlayState
 
-PARTIAL_INTERVAL = 0.8  # seconds between partial transcriptions
+PARTIAL_INTERVAL = 0.8  # default seconds between partial transcriptions
+
+
+def partial_interval_from_env(default: float = PARTIAL_INTERVAL) -> float:
+    """SARA_PARTIAL_INTERVAL in seconds. 0 (or negative) turns partial transcripts off,
+    so audio is transcribed only once per command. Use 3 or more with rate-limited
+    cloud speech-to-text; the local option has no limit."""
+    raw = (os.getenv("SARA_PARTIAL_INTERVAL") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return float("inf") if value <= 0 else value
 MIN_PARTIAL_SECONDS = 0.6  # do not transcribe less audio than this
 
 
@@ -165,10 +179,32 @@ class VoiceController:
 
 # -- speech to text ------------------------------------------------------------
 def make_transcriber() -> Optional[Callable[[bytes], str]]:
-    """Return wav_bytes -> text using OpenAI (default) or Groq, same env vars as audio.py."""
+    """Return wav_bytes -> text.
+
+    TRANSCRIPTION_PROVIDER: openai (default), groq, or local (faster-whisper on this
+    machine: free, no key, no rate limit; `pip install faster-whisper`, model downloads
+    on first use). Local options: SARA_WHISPER_MODEL (default "base"), SARA_WHISPER_LANGUAGE
+    (e.g. "en", default auto-detect)."""
     provider = (
         os.getenv("TRANSCRIPTION_PROVIDER") or os.getenv("STT_PROVIDER") or os.getenv("MODEL_PROVIDER") or "openai"
     ).lower()
+    if provider in ("local", "faster-whisper"):
+        import io
+
+        from faster_whisper import WhisperModel
+
+        model = WhisperModel(os.getenv("SARA_WHISPER_MODEL", "base"), device="cpu", compute_type="int8")
+        language = (os.getenv("SARA_WHISPER_LANGUAGE") or "").strip() or None
+        lock = threading.Lock()  # one transcription at a time on the shared model
+
+        def local_t(wav: bytes) -> str:
+            with lock:
+                segments, _ = model.transcribe(
+                    io.BytesIO(wav), language=language, beam_size=1, initial_prompt="Sara, open Notes."
+                )
+                return " ".join(s.text.strip() for s in segments).strip()
+
+        return local_t
     if provider == "groq":
         from groq import Groq
 
@@ -188,7 +224,7 @@ def make_transcriber() -> Optional[Callable[[bytes], str]]:
             return getattr(client.audio.transcriptions.create(file=("audio.wav", wav), model=model), "text", "") or ""
 
         return openai_t
-    print(f"Voice commands support openai or groq transcription, not '{provider}'.")
+    print(f"Voice commands support openai, groq or local transcription, not '{provider}'.")
     return None
 
 
@@ -197,7 +233,7 @@ def make_listener(
     controller: VoiceController,
     transcribe: Callable[[bytes], str],
     *,
-    partial_interval: float = PARTIAL_INTERVAL,
+    partial_interval: Optional[float] = None,
     threaded: bool = True,
     clock: Callable[[], float] = time.monotonic,
 ):
@@ -208,6 +244,9 @@ def make_listener(
     taken from command_rules.SILENCE_SECONDS, the maximum from MAX_COMMAND_SECONDS.
     """
     import vad as vadmod
+
+    if partial_interval is None:
+        partial_interval = partial_interval_from_env()
 
     vadmod.END_CONSECUTIVE = max(1, int(command_rules.SILENCE_SECONDS * 1000 / vadmod.FRAME_DURATION_MS))
     bytes_per_second = vadmod.SAMPLE_RATE * vadmod.BYTES_PER_SAMPLE
