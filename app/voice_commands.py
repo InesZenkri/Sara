@@ -36,13 +36,24 @@ from overlay import OverlayState
 PARTIAL_INTERVAL = 0.8  # default seconds between partial transcriptions
 
 
+def _log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def _provider() -> str:
+    return (
+        os.getenv("TRANSCRIPTION_PROVIDER") or os.getenv("STT_PROVIDER") or os.getenv("MODEL_PROVIDER") or "openai"
+    ).lower()
+
+
 def partial_interval_from_env(default: float = PARTIAL_INTERVAL) -> float:
     """SARA_PARTIAL_INTERVAL in seconds. 0 (or negative) turns partial transcripts off,
     so audio is transcribed only once per command. Use 3 or more with rate-limited
-    cloud speech-to-text; the local option has no limit."""
+    cloud speech-to-text. Unset: partials are OFF for local speech-to-text (a CPU
+    transcription every 0.8 s cannot keep up) and every PARTIAL_INTERVAL seconds otherwise."""
     raw = (os.getenv("SARA_PARTIAL_INTERVAL") or "").strip()
     if not raw:
-        return default
+        return float("inf") if _provider() in ("local", "faster-whisper") else default
     try:
         value = float(raw)
     except ValueError:
@@ -184,17 +195,25 @@ def make_transcriber() -> Optional[Callable[[bytes], str]]:
     TRANSCRIPTION_PROVIDER: openai (default), groq, or local (faster-whisper on this
     machine: free, no key, no rate limit; `pip install faster-whisper`, model downloads
     on first use). Local options: SARA_WHISPER_MODEL (default "base"), SARA_WHISPER_LANGUAGE
-    (e.g. "en", default auto-detect)."""
-    provider = (
-        os.getenv("TRANSCRIPTION_PROVIDER") or os.getenv("STT_PROVIDER") or os.getenv("MODEL_PROVIDER") or "openai"
-    ).lower()
+    (default "en"; "auto" detects the language, slower and less reliable on short commands),
+    SARA_WHISPER_THREADS (CPU threads, default 4, so the Mac stays usable)."""
+    provider = _provider()
     if provider in ("local", "faster-whisper"):
         import io
 
         from faster_whisper import WhisperModel
 
-        model = WhisperModel(os.getenv("SARA_WHISPER_MODEL", "base"), device="cpu", compute_type="int8")
-        language = (os.getenv("SARA_WHISPER_LANGUAGE") or "").strip() or None
+        name = os.getenv("SARA_WHISPER_MODEL", "base")
+        try:
+            threads = max(1, int(os.getenv("SARA_WHISPER_THREADS", "4")))
+        except ValueError:
+            threads = 4
+        _log(f"Loading Whisper model '{name}' (first run downloads it)...")
+        model = WhisperModel(name, device="cpu", compute_type="int8", cpu_threads=threads)
+        _log("Whisper model ready.")
+        language = (os.getenv("SARA_WHISPER_LANGUAGE") or "en").strip()
+        if language.lower() in ("", "auto"):
+            language = None
         lock = threading.Lock()  # one transcription at a time on the shared model
 
         def local_t(wav: bytes) -> str:
@@ -247,6 +266,10 @@ def make_listener(
 
     if partial_interval is None:
         partial_interval = partial_interval_from_env()
+    try:  # 3 = strictest: steady fan or room noise is less likely to count as speech
+        vadmod.VAD_MODE = min(3, max(0, int(os.getenv("SARA_VAD_MODE", "3"))))
+    except ValueError:
+        vadmod.VAD_MODE = 3
 
     vadmod.END_CONSECUTIVE = max(1, int(command_rules.SILENCE_SECONDS * 1000 / vadmod.FRAME_DURATION_MS))
     bytes_per_second = vadmod.SAMPLE_RATE * vadmod.BYTES_PER_SAMPLE
@@ -257,8 +280,11 @@ def make_listener(
             self._utt = 0
             self._last_partial = 0.0
             self._inflight = False
+            self._final_lock = threading.Lock()  # finals run one at a time, in order
+            self.final_threads: list = []
 
         def _started(self):
+            _log("[speech start]")
             self._utt += 1
             self._last_partial = clock()
             controller.start_utterance()
@@ -270,23 +296,41 @@ def make_listener(
                 if utt == self._utt:  # drop results from an utterance that already ended
                     controller.on_partial(text)
             except Exception as exc:
-                print(f"Partial transcription failed: {exc}")
+                _log(f"Partial transcription failed: {exc}")
             finally:
                 self._inflight = False
 
         def _ended(self, wav_bytes, duration):
             self._utt += 1  # invalidates any partial still in flight
+            _log(f"[speech end] {duration:.1f}s")
             if duration < 0.4:
                 controller.overlay.hide()
                 return
-            try:
-                text = transcribe(wav_bytes)
-            except Exception as exc:
-                print(f"Final transcription failed: {exc}")
-                controller.overlay.error("Could not transcribe")
-                return
-            print(f"Heard: {text}")
-            controller.on_final(text, wav_bytes)
+            if threaded:
+                # Transcribing can take seconds on a CPU. Do it off the audio loop so
+                # frames keep being read and the queue does not grow.
+                t = threading.Thread(target=self._final, args=(wav_bytes,), daemon=True)
+                self.final_threads.append(t)
+                self.final_threads = [x for x in self.final_threads if x.is_alive() or x is t]
+                t.start()
+            else:
+                self._final(wav_bytes)
+
+        def _final(self, wav_bytes):
+            with self._final_lock:
+                try:
+                    text = transcribe(wav_bytes)
+                except Exception as exc:
+                    _log(f"Final transcription failed: {exc}")
+                    controller.overlay.error("Could not transcribe")
+                    return
+                _log(f"Heard: {text}")
+                try:
+                    result = controller.on_final(text, wav_bytes)
+                except Exception as exc:
+                    _log(f"Handling failed: {exc}")
+                    return
+                _log(f"  -> {result}" + (" (say the wake word first, e.g. 'Sara, open Notes')" if result == "ignored" else ""))
 
         def _process_frame(self, frame_bytes):
             super()._process_frame(frame_bytes)
