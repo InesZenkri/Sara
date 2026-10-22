@@ -1,6 +1,6 @@
 """Mac control layer for Sara.
 
-Lets Sara open apps, create notes and type text, with a safety policy:
+Lets Sara open apps, create and edit notes and type text, with a safety policy:
 
 - SAFE actions (open an allow-listed app, create a note) run right away.
 - CONFIRM actions (typing into the focused app) need an explicit yes from
@@ -17,6 +17,7 @@ Set SARA_ALLOWED_APPS="Notes,Safari,..." to change the allow-list.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
@@ -34,6 +35,32 @@ DEFAULT_ALLOWED_APPS = (
 )
 
 MAX_TEXT_LENGTH = 5000
+
+# Sources for note text. "the terminal output" means the last lines Sara printed in
+# this terminal (run_voice.py registers them); "the clipboard" means what you copied.
+_terminal_source: Optional[Callable[[], str]] = None
+
+
+def set_terminal_source(fn: Optional[Callable[[], str]]) -> None:
+    global _terminal_source
+    _terminal_source = fn
+
+
+def read_clipboard() -> str:
+    try:
+        return subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5).stdout
+    except (subprocess.SubprocessError, OSError):
+        return ""
+
+
+def resolve_note_text(spoken: str) -> str:
+    """Turn a spoken body into real text: terminal output, clipboard, or the words as said."""
+    words = (spoken or "").strip().lower().rstrip(".!")
+    if re.match(r"(?:the |that |this )?(?:last |latest )?(?:terminal|console)(?: output| text| log)?\b", words):
+        return (_terminal_source() if _terminal_source else "")[-MAX_TEXT_LENGTH:]
+    if re.match(r"(?:(?:the |my )?(?:clipboard|clipboard text|copied text)|what i (?:just )?copied)\b", words):
+        return read_clipboard()[:MAX_TEXT_LENGTH]
+    return (spoken or "").strip()
 
 
 class Risk(Enum):
@@ -104,18 +131,82 @@ def _html_escape(text: str) -> str:
     )
 
 
+# The note Sara made last, so "change that note's title" has something to point at.
+_last_note: dict = {}
+
+
+def _note_html(title: str, body: str) -> str:
+    # Notes takes its title from the first line, so write the title as that line.
+    return f"<div><h1>{_html_escape(title)}</h1></div><div>{_html_escape(body)}</div>"
+
+
 def create_note(title: str, body: str = "") -> MacResult:
     if match_app("Notes") is None:
         return MacResult(False, "Notes is not on my allowed apps list", Risk.BLOCKED)
     title = (title or "Note from Sara").strip()[:200]
     body = (body or "")[:MAX_TEXT_LENGTH]
     if dry_run():
+        _last_note.clear()
+        _last_note.update(id="", title=title, body=body)
         return MacResult(True, f"[dry run] would create note '{title}'", Risk.SAFE)
     try:
-        _run(["osascript", "-e", _NOTE_SCRIPT, title, _html_escape(body)])
+        proc = _run(["osascript", "-e", _NOTE_SCRIPT, title, _note_html(title, body)])
     except (subprocess.SubprocessError, OSError) as exc:
         return MacResult(False, f"Could not create note: {exc}", Risk.SAFE)
+    out = proc.stdout if isinstance(getattr(proc, "stdout", None), str) else ""
+    _last_note.clear()
+    _last_note.update(id=out.strip(), title=title, body=body)
     return MacResult(True, f"Created note '{title}'", Risk.SAFE, executed=True)
+
+
+_EDIT_NOTE_SCRIPT = """
+on run argv
+    tell application "Notes"
+        set n to note id (item 1 of argv)
+        set body of n to (item 2 of argv)
+    end tell
+end run
+"""
+
+
+def edit_note(title: str = "", body: str = "", mode: str = "set") -> MacResult:
+    """Rename and/or change the body of the note Sara created last.
+    mode "set" replaces the body, "append" adds to it. Only that one note can be
+    edited, never other notes."""
+    if match_app("Notes") is None:
+        return MacResult(False, "Notes is not on my allowed apps list", Risk.BLOCKED)
+    if not _last_note:
+        return MacResult(False, "I have not made a note yet, so there is nothing to edit", Risk.SAFE)
+    if not (title or "").strip() and not (body or "").strip():
+        return MacResult(False, "Nothing to change in the note", Risk.SAFE)
+    new_title = (title or "").strip()[:200] or _last_note["title"]
+    text = resolve_note_text(body) if (body or "").strip() else None
+    if text is not None and not text.strip():
+        return MacResult(False, "There was no text to put in the note (terminal output or clipboard empty)", Risk.SAFE)
+    old_body = _last_note.get("body", "")
+    if text is None:
+        new_body = old_body
+    elif mode == "append" and old_body:
+        new_body = (old_body + "\n" + text)[:MAX_TEXT_LENGTH]
+    else:
+        new_body = text[:MAX_TEXT_LENGTH]
+    what = []
+    if (title or "").strip():
+        what.append(f"title '{new_title}'")
+    if text is not None:
+        what.append(f"{'added to' if mode == 'append' else 'new'} body ({len(text)} characters)")
+    summary = " and ".join(what)
+    if dry_run():
+        _last_note.update(title=new_title, body=new_body)
+        return MacResult(True, f"[dry run] would edit note: {summary}", Risk.SAFE)
+    if not _last_note.get("id"):
+        return MacResult(False, "I lost track of the note I made, so I will not guess which one to edit", Risk.SAFE)
+    try:
+        _run(["osascript", "-e", _EDIT_NOTE_SCRIPT, _last_note["id"], _note_html(new_title, new_body)])
+    except (subprocess.SubprocessError, OSError) as exc:
+        return MacResult(False, f"Could not edit note: {exc}", Risk.SAFE)
+    _last_note.update(title=new_title, body=new_body)
+    return MacResult(True, f"Edited note: {summary}", Risk.SAFE, executed=True)
 
 
 _TYPE_SCRIPT = """
@@ -147,6 +238,7 @@ def risk_of(action: str) -> Risk:
     return {
         "OPEN_APP": Risk.SAFE,
         "CREATE_NOTE": Risk.SAFE,
+        "EDIT_NOTE": Risk.SAFE,
         "TYPE_TEXT": Risk.CONFIRM,
     }.get(action, Risk.BLOCKED)
 
@@ -157,6 +249,7 @@ def execute(
     app: str = "",
     title: str = "",
     text: str = "",
+    mode: str = "set",
     confirm: Optional[Callable[[str], bool]] = None,
 ) -> MacResult:
     """Single entry point for the assistant: dispatch a Mac action by name."""
@@ -164,6 +257,8 @@ def execute(
         return open_app(app)
     if action == "CREATE_NOTE":
         return create_note(title, text)
+    if action == "EDIT_NOTE":
+        return edit_note(title, text, mode)
     if action == "TYPE_TEXT":
         return type_text(text, confirm)
     return MacResult(False, f"Unknown Mac action '{action}'", Risk.BLOCKED)
