@@ -1,17 +1,17 @@
 # Sara - What Siri should have been
 
-Sara is a voice assistant for macOS that does things: say "Sara, open Notes" and Notes opens. It creates and edits Apple Notes, types text for you (after asking first), and turns your clipboard into a supertool: summaries, rewrites, memes, background removal, chess analysis. Born at Big Berlin Hack 2025 as a clipboard project, now a voice-controlled assistant for the whole Mac.
+Sara is a voice assistant for macOS that does things: say "Sara, open Notes" and Notes opens. It creates and edits Apple Notes, types text for you (after asking first), and turns your clipboard into a supertool: summaries, rewrites, memes, background removal, chess analysis. Born at Big Berlin Hack 2025 as a clipboard project, now a voice-controlled Mac assistant.
 
-Runs free and local: any OpenAI-compatible LLM (the Gemini and Groq free tiers both work), local faster-whisper speech-to-text, and the built-in macOS `say` voice. No paid service required.
+Free to run: speech-to-text is local (faster-whisper), voice replies use the built-in macOS `say` command, and the LLM is configurable - any OpenAI-compatible provider; Sara is used with the Gemini free tier.
 
 ## How it works
 
 ```mermaid
 flowchart LR
     A(["You speak"]) --> B["Speech-to-text<br>faster-whisper on your Mac<br>(or OpenAI / Groq)"]
-    B --> C{"Heard 'Sara' +<br>a command?"}
+    B --> C{"'Sara' or active<br>follow-up window?"}
     C -->|"cancel / 'Sara, bye'"| X(["Cancelled / stopped"])
-    C -->|"no wake word"| Y(["Ignored"])
+    C -->|neither| Y(["Ignored"])
     C -->|"open app, note, type"| D["Mac control<br>allow-listed apps only,<br>typing asks first"]
     C -->|"anything else"| E["Clipboard assistant<br>LLM: summaries, memes,<br>background removal, chess"]
     D --> F["Reply: macOS say<br>Overlay: Listening / Heard / Doing"]
