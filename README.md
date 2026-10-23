@@ -1,8 +1,29 @@
 # Sara - What Siri should have been
 
-A voice assistant for macOS, written in Python. Say "Sara" and tell it what to do: it opens apps, creates and edits Apple Notes, types text for you, and works on whatever is on your clipboard (summaries, memes, background removal, chess moves). Started at Big Berlin Hack 2025 as a clipboard supertool; the current version also acts on the Mac while you are still speaking.
+Sara is a voice assistant for macOS that does things, not just answers. Say "Sara, open Notes" and Notes opens before you finish the sentence. It creates and edits Apple Notes, types text for you (after asking first), and turns your clipboard into a supertool: summaries, rewrites, memes, background removal, chess analysis. Born at Big Berlin Hack 2025 as a clipboard project, now a voice-controlled assistant for the whole Mac.
 
 Runs free and local: any OpenAI-compatible LLM (the Gemini and Groq free tiers both work), local faster-whisper speech-to-text, and the built-in macOS `say` voice. No paid service required.
+
+## How it works
+
+```mermaid
+flowchart TD
+    A(["You speak"]) --> B["Wake word 'Sara'<br>local, fuzzy match"]
+    B --> C["Speech-to-text<br>faster-whisper on your Mac<br>(or OpenAI / Groq)"]
+    C --> D{"What did you say?"}
+    D -->|"open app, create/edit note, type"| E["Mac control<br>allow-listed apps only"]
+    D -->|"cancel / 'Sara, bye'"| X(["Cancelled / stopped"])
+    D -->|"anything else"| F["Clipboard assistant<br>LLM decides the action"]
+    E --> G{"Needs confirmation?<br>(typing)"}
+    G -->|yes| H["Dialog asks you first"]
+    G -->|no| I["Runs while you speak"]
+    H --> I
+    F --> J["Clipboard tools<br>summaries, memes, background removal,<br>chess moves, Facebook posts"]
+    I --> K["Sara replies: macOS say (or Cartesia)<br>Overlay: Listening / Heard / Doing"]
+    J --> K
+```
+
+Partial transcripts stream to the command rules while you talk, so safe actions start before the sentence ends. A 10-second follow-up window lets the next command skip the wake word.
 
 ## What Sara can do
 
