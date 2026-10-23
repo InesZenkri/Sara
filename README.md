@@ -2,7 +2,7 @@
 
 Sara is a voice assistant for macOS that does things: say "Sara, open Notes" and Notes opens. It creates and edits Apple Notes, types text for you (after asking first), and turns your clipboard into a supertool: summaries, rewrites, memes, background removal, chess analysis. Born at Big Berlin Hack 2025 as a clipboard project, now a voice-controlled Mac assistant.
 
-Free to run: speech-to-text is local (faster-whisper), voice replies use the built-in macOS `say` command, and the LLM is configurable - any OpenAI-compatible provider; Sara is used with the Gemini free tier.
+Speech-to-text runs locally with faster-whisper, and voice replies use the built-in macOS `say` command. The LLM connection is configurable through an OpenAI-compatible API; cloud usage depends on the provider and its terms.
 
 ## How it works
 
