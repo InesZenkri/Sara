@@ -149,10 +149,12 @@ hotword = "sara"
 
 
 def speak_response(text: str):
-    """Generate and play voice response using Cartesia TTS."""
+    """Generate and play voice response (macOS say or Cartesia)."""
     if not tts_client or not text:
         return
-    
+    from echo_guard import guard
+
+    guard.begin(text)  # the microphone ignores Sara's own voice while this runs
     try:
         # Generate speech
         audio_data = tts_client.synthesize(text)
@@ -173,6 +175,8 @@ def speak_response(text: str):
             
     except Exception as e:
         print(f"Error playing voice response: {e}")
+    finally:
+        guard.end()
 
 def notify_user(message: Optional[str], emotion: Optional[str] = None):
     """Show a concise notification while speaking full response."""

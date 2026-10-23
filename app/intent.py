@@ -67,17 +67,24 @@ _NOTE_RE = re.compile(
 _TYPE_RE = re.compile(r"^\s*(?:please\s+)?type\s+(.+)$", re.IGNORECASE)
 
 # Editing the note Sara made last: rename it, set its body, or add to its body.
+# Whisper says "changed", "changes", "the notes name" and so on; accept those too.
+_EDIT_VERB = (
+    r"(?:chang(?:e|ed|es|ing)|renam(?:e|ed|es|ing)|edit(?:ed|s|ing)?|updat(?:e|ed|es|ing)"
+    r"|modif(?:y|ied|ies|ying)|sets?)"
+)
 _EDIT_HINT_RE = re.compile(
-    r"\b(?:change|rename|edit|update|modify|set)\b.*\bnote\b"
-    r"|\b(?:set|change|make)\s+(?:the\s+)?(?:description|body|content)\s+(?:to|as)\b"
-    r"|\bnote(?:'s)?\s+(?:title|name|description|body)\b"
+    r"\b" + _EDIT_VERB + r"\b.*\bnotes?\b"
+    r"|\b(?:set|change|changed|changes|make)\s+(?:the\s+)?(?:description|body|content)\s+(?:to|as)\b"
+    r"|\bnotes?(?:'s|s)?\s+(?:title|name|description|body)\b"
+    r"|\b(?:title|name)\s+of\s+(?:that|the|this|my|last)\s+notes?\b"
     r"|\b(?:as|for)\s+(?:the\s+)?(?:description|body)\b"
     r"|\b(?:append|add|put)\b.+\b(?:to|in|into)\s+(?:that|the|this|my|last)\s+note\b",
     re.IGNORECASE,
 )
 _END = r"(?=\s+and\s+(?:then\s+)?(?:as|for|set|put|add|write|use|with)\b|[.!?]*$)"
 _TITLE_RE = re.compile(
-    r"\b(?:(?:title|name)\s+(?:to|as)|rename\s+(?:that|the|this|my|last)?\s*note\s+(?:to|as))\s+(.+?)" + _END,
+    r"\b(?:(?:title|name)\s+(?:to|as)|(?:title|name)\s+of\s+(?:that|the|this|my|last)\s+notes?\s+(?:to|as)"
+    r"|renam\w*\s+(?:that|the|this|my|last)?\s*notes?\s+(?:to|as))\s+(.+?)" + _END,
     re.IGNORECASE,
 )
 _BODY_RE = re.compile(
@@ -109,7 +116,9 @@ def extract_args(action: str, text: str) -> dict:
         args: dict = {}
         m = _TITLE_RE.search(text)
         if m:
-            args["title"] = m.group(1).strip()[:200]
+            # Whisper often turns "to Sara" into "a open note to Sara": drop that stray lead-in.
+            title = re.sub(r"^(?:(?:an?|the)\s+)?open\s+", "", m.group(1).strip(), flags=re.IGNORECASE)
+            args["title"] = title.strip(" .,!?")[:200]
         m = _APPEND_RE.search(text)
         if m:
             args["text"] = m.group(1).strip()
@@ -158,7 +167,11 @@ class RuleBackend:
         args = extract_args(action, text)
         if action == "OPEN_APP":
             app = args.get("app", "").lower().removesuffix(" app")
-            conf = 0.9 if app in self.known else 0.2
+            if app not in self.known and app.rstrip("s") not in {k.rstrip("s") for k in self.known}:
+                # Not an app Sara may open ("open note to sara"): not a Mac command, let the
+                # chat assistant handle it instead of failing with "not on my allowed list".
+                return IntentGuess()
+            conf = 0.9
         else:
             conf = 0.9 if args else 0.4
         return IntentGuess(action, args, conf, complete=False)

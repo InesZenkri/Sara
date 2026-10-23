@@ -79,6 +79,7 @@ controller = VoiceController(
     overlay=state,
     legacy=on_hotword_detected,  # anything that is not a Mac command goes to the old clipboard assistant
     notify=notify_user,
+    async_notify=True,
     hotword=hotword,
 )
 if gui is None:  # no window: show the same status in the terminal

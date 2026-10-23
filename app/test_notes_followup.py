@@ -47,10 +47,11 @@ class EditNoteAction(unittest.TestCase):
         mc.set_terminal_source(None)
         os.environ.pop("SARA_MAC_DRY_RUN", None)
 
-    def test_nothing_to_edit_before_a_note_exists(self):
-        res = mc.edit_note("x")
+    def test_nothing_to_edit_when_notes_has_no_note(self):
+        with mock.patch.object(mc.subprocess, "run", return_value=mock.Mock(stdout="")):
+            res = mc.edit_note("x")
         self.assertFalse(res.ok)
-        self.assertIn("not made a note", res.message)
+        self.assertIn("could not find a note", res.message)
 
     def test_rename_and_terminal_body_use_argv_not_script(self):
         mc.set_terminal_source(lambda: "line one\nline <two>")

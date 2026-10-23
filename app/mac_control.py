@@ -94,6 +94,9 @@ def match_app(name: str) -> Optional[str]:
     for app in allowed_apps():
         if app.lower() == wanted:
             return app
+    for app in allowed_apps():  # "open note" for Notes
+        if wanted and app.lower().rstrip("s") == wanted.rstrip("s"):
+            return app
     return None
 
 
@@ -169,16 +172,66 @@ end run
 """
 
 
+_FIND_NOTE_SCRIPT = """
+tell application "Notes"
+    if (count of notes) is 0 then return ""
+    set best to first note
+    set bestDate to modification date of best
+    set i to 0
+    repeat with n in notes
+        set i to i + 1
+        if i > 60 then exit repeat
+        if (modification date of n) > bestDate then
+            set best to contents of n
+            set bestDate to modification date of best
+        end if
+    end repeat
+    return (id of best) & (character id 31) & (name of best) & (character id 31) & (body of best)
+end tell
+"""
+
+
+def lookup_recent_note() -> dict:
+    """The most recently modified note in Notes (looks at the newest 60), or {}."""
+    try:
+        proc = _run(["osascript", "-e", _FIND_NOTE_SCRIPT])
+    except (subprocess.SubprocessError, OSError):
+        return {}
+    out = proc.stdout if isinstance(getattr(proc, "stdout", None), str) else ""
+    parts = out.rstrip("\n").split("\x1f", 2)
+    if len(parts) != 3 or not parts[0].strip():
+        return {}
+    return {"id": parts[0].strip(), "title": parts[1], "html": parts[2], "body": ""}
+
+
+def resolve_title(title: str) -> str:
+    """"Sara and the date of today" -> "Sara 2026-10-22". Format: SARA_DATE_FORMAT (default %Y-%m-%d)."""
+    import datetime
+
+    fmt = os.getenv("SARA_DATE_FORMAT", "%Y-%m-%d")
+    today = datetime.date.today().strftime(fmt)
+    pattern = r"(?:\s*(?:,|and|with)\s+)?(?:the\s+)?(?:date\s+of\s+today|today'?s\s+date|current\s+date|date\s+today|date)\b"
+    out = re.sub(pattern, " " + today, title or "", flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", out).strip()
+
+
 def edit_note(title: str = "", body: str = "", mode: str = "set") -> MacResult:
-    """Rename and/or change the body of the note Sara created last.
-    mode "set" replaces the body, "append" adds to it. Only that one note can be
-    edited, never other notes."""
+    """Rename and/or change the body of "that note": the note Sara created last, or, when
+    she has made none this run, the most recently modified note in Notes.
+    mode "set" replaces the body, "append" adds to it. Never any other note."""
     if match_app("Notes") is None:
         return MacResult(False, "Notes is not on my allowed apps list", Risk.BLOCKED)
-    if not _last_note:
-        return MacResult(False, "I have not made a note yet, so there is nothing to edit", Risk.SAFE)
     if not (title or "").strip() and not (body or "").strip():
         return MacResult(False, "Nothing to change in the note", Risk.SAFE)
+    title = resolve_title(title)
+    if not _last_note:
+        if dry_run():
+            _last_note.update(id="", title="(most recent note)", body="")
+        else:
+            found = lookup_recent_note()
+            if not found:
+                return MacResult(False, "I could not find a note to edit", Risk.SAFE)
+            _last_note.update(found)
     new_title = (title or "").strip()[:200] or _last_note["title"]
     text = resolve_note_text(body) if (body or "").strip() else None
     if text is not None and not text.strip():
@@ -201,11 +254,23 @@ def edit_note(title: str = "", body: str = "", mode: str = "set") -> MacResult:
         return MacResult(True, f"[dry run] would edit note: {summary}", Risk.SAFE)
     if not _last_note.get("id"):
         return MacResult(False, "I lost track of the note I made, so I will not guess which one to edit", Risk.SAFE)
+    if "html" in _last_note:  # an older note: keep its formatting, change only what was asked
+        html = _last_note["html"]
+        if (title or "").strip():
+            html = html.replace(_html_escape(_last_note["title"]), _html_escape(new_title), 1)
+        if text is not None:
+            html = _note_html(new_title, text) if mode != "append" else html + f"<div>{_html_escape(text)}</div>"
+        new_html = html
+    else:
+        new_html = _note_html(new_title, new_body)
     try:
-        _run(["osascript", "-e", _EDIT_NOTE_SCRIPT, _last_note["id"], _note_html(new_title, new_body)])
+        _run(["osascript", "-e", _EDIT_NOTE_SCRIPT, _last_note["id"], new_html])
     except (subprocess.SubprocessError, OSError) as exc:
         return MacResult(False, f"Could not edit note: {exc}", Risk.SAFE)
-    _last_note.update(title=new_title, body=new_body)
+    if "html" in _last_note:
+        _last_note.update(title=new_title, html=new_html)
+    else:
+        _last_note.update(title=new_title, body=new_body)
     return MacResult(True, f"Edited note: {summary}", Risk.SAFE, executed=True)
 
 
