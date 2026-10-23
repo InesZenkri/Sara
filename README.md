@@ -1,29 +1,24 @@
 # Sara - What Siri should have been
 
-Sara is a voice assistant for macOS that does things, not just answers. Say "Sara, open Notes" and Notes opens before you finish the sentence. It creates and edits Apple Notes, types text for you (after asking first), and turns your clipboard into a supertool: summaries, rewrites, memes, background removal, chess analysis. Born at Big Berlin Hack 2025 as a clipboard project, now a voice-controlled assistant for the whole Mac.
+Sara is a voice assistant for macOS that does things: say "Sara, open Notes" and Notes opens. It creates and edits Apple Notes, types text for you (after asking first), and turns your clipboard into a supertool: summaries, rewrites, memes, background removal, chess analysis. Born at Big Berlin Hack 2025 as a clipboard project, now a voice-controlled assistant for the whole Mac.
 
 Runs free and local: any OpenAI-compatible LLM (the Gemini and Groq free tiers both work), local faster-whisper speech-to-text, and the built-in macOS `say` voice. No paid service required.
 
 ## How it works
 
 ```mermaid
-flowchart TD
-    A(["You speak"]) --> B["Wake word 'Sara'<br>local, fuzzy match"]
-    B --> C["Speech-to-text<br>faster-whisper on your Mac<br>(or OpenAI / Groq)"]
-    C --> D{"What did you say?"}
-    D -->|"open app, create/edit note, type"| E["Mac control<br>allow-listed apps only"]
-    D -->|"cancel / 'Sara, bye'"| X(["Cancelled / stopped"])
-    D -->|"anything else"| F["Clipboard assistant<br>LLM decides the action"]
-    E --> G{"Needs confirmation?<br>(typing)"}
-    G -->|yes| H["Dialog asks you first"]
-    G -->|no| I["Runs while you speak"]
-    H --> I
-    F --> J["Clipboard tools<br>summaries, memes, background removal,<br>chess moves, Facebook posts"]
-    I --> K["Sara replies: macOS say (or Cartesia)<br>Overlay: Listening / Heard / Doing"]
-    J --> K
+flowchart LR
+    A(["You speak"]) --> B["Speech-to-text<br>faster-whisper on your Mac<br>(or OpenAI / Groq)"]
+    B --> C{"Heard 'Sara' +<br>a command?"}
+    C -->|"cancel / 'Sara, bye'"| X(["Cancelled / stopped"])
+    C -->|"no wake word"| Y(["Ignored"])
+    C -->|"open app, note, type"| D["Mac control<br>allow-listed apps only,<br>typing asks first"]
+    C -->|"anything else"| E["Clipboard assistant<br>LLM: summaries, memes,<br>background removal, chess"]
+    D --> F["Reply: macOS say<br>Overlay: Listening / Heard / Doing"]
+    E --> F
 ```
 
-Partial transcripts stream to the command rules while you talk, so safe actions start before the sentence ends. A 10-second follow-up window lets the next command skip the wake word.
+Each command is transcribed and then acted on. With optional partial transcripts (`SARA_PARTIAL_INTERVAL`), safe actions can already start while you speak; off by default for local speech-to-text.
 
 ## What Sara can do
 
@@ -35,7 +30,7 @@ Off by default; enable with `SARA_VOICE_COMMANDS=true`.
 - Opens allow-listed apps (default: Notes, Safari, Calendar, Reminders, Finder, Music, Maps, Calculator; change with `SARA_ALLOWED_APPS`). Anything not on the list is refused.
 - Creates and edits Apple Notes by voice, including "put the terminal output in the note".
 - Types into the focused app, but only after you confirm in a dialog.
-- Acts while you speak: partial transcripts trigger safe actions before the sentence ends, and a follow-up window (10 s by default, `SARA_FOLLOWUP_SECONDS`) lets the next command skip the wake word.
+- A follow-up window (10 s by default, `SARA_FOLLOWUP_SECONDS`) lets the next command skip the wake word.
 - Optional overlay pill showing Listening / Heard / Doing / Done (`SARA_OVERLAY=true`).
 - Dry-run mode logs what it would do without touching the Mac (`SARA_MAC_DRY_RUN=true`).
 
