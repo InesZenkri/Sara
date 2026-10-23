@@ -141,7 +141,7 @@ if __name__ == "__main__":
     import sys
 
     parser = argparse.ArgumentParser(description="Create a Facebook Page post (feed) with an image via Graph API")
-    parser.add_argument("--image_path", help="Path to the image file to upload (.png, .jpg, .jpeg, .gif, .tif, .tiff, .bmp, .heic, .heif, .webp)", default='/Users/zenkri/Desktop/img.png')
+    parser.add_argument("--image_path", help="Path to the image file to upload (.png, .jpg, .jpeg, .gif, .tif, .tiff, .bmp, .heic, .heif, .webp)", default='img.png')
     parser.add_argument("--caption", "-c", help="Optional caption for the post", default='This is my first post')
     args = parser.parse_args()
 
