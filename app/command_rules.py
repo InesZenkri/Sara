@@ -83,10 +83,14 @@ def split_wake_word(text: str, hotword: str = "sara") -> Optional[str]:
     ("" if only the wake word was said). Otherwise None.
     Only the first 3 words are considered, so a name later in a sentence
     ("tell sara hi" inside a long sentence) does not trigger."""
-    words = _words(text)
+    # Use normalized words only to recognize the wake phrase. Keep their spans
+    # so the command itself comes from the original transcript, not a lossy
+    # reconstruction that drops digits, punctuation and capitalization.
+    matches = list(re.finditer(r"[a-z\u00e0-\u00ff']+", text, re.IGNORECASE))
+    words = [m.group().lower() for m in matches]
     for i, w in enumerate(words[:3]):
         if _is_sara(w, hotword) and all(x in _LEADERS for x in words[:i]):
-            return " ".join(words[i + 1 :])
+            return text[matches[i].end():].lstrip(" \t\r\n,.:;!?-").rstrip()
     return None
 
 
