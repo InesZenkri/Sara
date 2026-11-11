@@ -29,10 +29,11 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Protocol
 
-ACTIONS = ("OPEN_APP", "CREATE_NOTE", "EDIT_NOTE", "TYPE_TEXT")
+ACTIONS = ("OPEN_APP", "CREATE_NOTE", "EDIT_NOTE", "REMIND", "TYPE_TEXT")
 
-# Only these may fire before the sentence is finished. Typing needs confirmation
-# and notes need their full text, so both wait for the final transcript.
+# Only these may fire before the sentence is finished. Typing needs confirmation,
+# notes need their full text and reminders their full time, so all of them wait
+# for the final transcript.
 EARLY_SAFE_ACTIONS = frozenset({"OPEN_APP"})
 
 DEFAULT_KNOWN_APPS = (
@@ -65,6 +66,38 @@ _NOTE_RE = re.compile(
     re.IGNORECASE,
 )
 _TYPE_RE = re.compile(r"^\s*(?:please\s+)?type\s+(.+)$", re.IGNORECASE)
+
+# Reminders: "remind me to ...", "set/create/add/make a reminder (to/for/about) ...".
+_REMIND_RE = re.compile(
+    r"\bremind\s+me\b|\b(?:set|create|add|make)\s+(?:a\s+|new\s+)?reminders?\b", re.IGNORECASE
+)
+
+# Start of a time phrase inside the command: "at 5 pm", "in 20 minutes", "tomorrow".
+_TIME_START_RE = re.compile(
+    r"(?:^|\s)(?=in\s+\d|in\s+a\s+(?:bit|while|moment)\b"
+    r"|at\s+(?:\d|noon\b|midday\b|midnight\b"
+    r"|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b)"
+    r"|today\b|tomorrow\b|tonight\b|this\s+(?:morning|afternoon|evening)\b)",
+    re.IGNORECASE,
+)
+
+# "remind me in 20 minutes to call the dentist": the time comes first.
+_LEADING_TIME_RE = re.compile(
+    r"^\s*(in\s+\d+\s*(?:minutes?|mins?|hours?|hrs?)"
+    r"|(?:tomorrow\s+)?at\s+\d{1,2}(?::\d{2})?\s*(?:a\.?\s?m\.?|p\.?\s?m\.?)?)\s*,?\s+to\s+(.+)$",
+    re.IGNORECASE,
+)
+
+
+def _split_reminder_time(text: str) -> tuple:
+    """'call the dentist at 5 pm' -> ('call the dentist', 'at 5 pm')."""
+    m = _LEADING_TIME_RE.match(text)
+    if m:
+        return m.group(2).strip(), m.group(1).strip()
+    m = _TIME_START_RE.search(text)
+    if not m:
+        return text.strip(), ""
+    return text[: m.start()].strip(), text[m.start():].strip()
 
 # Editing the note Sara made last: rename it, set its body, or add to its body.
 # Whisper says "changed", "changes", "the notes name" and so on; accept those too.
@@ -134,6 +167,17 @@ def extract_args(action: str, text: str) -> dict:
     if action == "TYPE_TEXT":
         m = _TYPE_RE.search(text)
         return {"text": m.group(1).strip()} if m else {}
+    if action == "REMIND":
+        m = _REMIND_RE.search(text)
+        rest = text[m.end():] if m else text
+        rest = re.sub(r"^\s*(?:to|about|that|of|for)\s+", "", rest.strip(), flags=re.IGNORECASE)
+        task, when = _split_reminder_time(rest)
+        args: dict = {}
+        if task:
+            args["task"] = task.strip(" ,")
+        if when:
+            args["when"] = when
+        return args
     return {}
 
 
@@ -141,6 +185,8 @@ def rule_action(text: str) -> Optional[str]:
     t = _fix_stt(text.strip().lower())
     if _TYPE_RE.search(t):
         return "TYPE_TEXT"
+    if _REMIND_RE.search(t):
+        return "REMIND"
     if _NOTE_RE.search(t) or re.search(r"\b(?:create|make|add|write)\s+(?:a\s+|new\s+)*note\b", t):
         return "CREATE_NOTE"
     if _EDIT_HINT_RE.search(t):
@@ -185,7 +231,7 @@ class LLMBackend:
     PROMPT = (
         "You classify a PARTIAL voice command for a Mac assistant. The speaker may "
         "not have finished. Reply with JSON only: "
-        '{"action": "OPEN_APP" | "CREATE_NOTE" | "TYPE_TEXT" | "NONE", '
+        '{"action": "OPEN_APP" | "CREATE_NOTE" | "TYPE_TEXT" | "REMIND" | "NONE", '
         '"confidence": number 0-1, "complete": boolean}. '
         "Use NONE for anything that is not clearly one of those commands.\n\n"
         "Partial transcript: "
@@ -256,6 +302,7 @@ class JevBackend:
                         "OPEN_APP": "Open or launch an application",
                         "CREATE_NOTE": "Create a note",
                         "TYPE_TEXT": "Type text into the focused app",
+                        "REMIND": "Create a reminder in the Reminders app, with or without a time",
                         "NONE": "Anything else, or unclear",
                     },
                 },

@@ -29,6 +29,7 @@ Off by default; enable with `SARA_VOICE_COMMANDS=true`.
 - Wake word "Sara" with fuzzy matching ("hey sara", "ok sara"). "Sara, cancel" cancels before an action runs; "Sara, bye" (or "that was it", "thanks", "stop listening") stops her.
 - Opens allow-listed apps (default: Notes, Safari, Calendar, Reminders, Finder, Music, Maps, Calculator; change with `SARA_ALLOWED_APPS`). Anything not on the list is refused.
 - Creates and edits Apple Notes by voice, including "put the terminal output in the note".
+- Creates Apple Reminders with a due time: "Sara, remind me to call the dentist at 5 pm", "...in 20 minutes" or "...tomorrow at 9 am". If the time is unclear ("at 5" - am or pm?) Sara asks instead of guessing; a short answer ("5 pm") settles it. A clock time that has already passed today is confirmed before the reminder lands on tomorrow.
 - Types into the focused app, but only after you confirm in a dialog.
 - A follow-up window (10 s by default, `SARA_FOLLOWUP_SECONDS`) lets the next command skip the wake word.
 - Optional overlay pill showing Listening / Heard / Doing / Done (`SARA_OVERLAY=true`).

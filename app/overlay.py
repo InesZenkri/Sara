@@ -25,6 +25,7 @@ class Phase(Enum):
     DOING = "doing"
     DONE = "done"
     ERROR = "error"
+    WAITING = "waiting"  # Sara asked a question and waits for the answer
 
 
 LABELS = {
@@ -33,6 +34,7 @@ LABELS = {
     Phase.DOING: "Doing",
     Phase.DONE: "Done",
     Phase.ERROR: "Oops",
+    Phase.WAITING: "Waiting",
 }
 
 MAX_TEXT = 120
@@ -105,6 +107,9 @@ class OverlayState:
 
     def error(self, message: str = "") -> None:
         self._set(Phase.ERROR, message)
+
+    def waiting(self, question: str = "") -> None:
+        self._set(Phase.WAITING, question)
 
     def hide(self) -> None:
         self._set(Phase.IDLE, "")
