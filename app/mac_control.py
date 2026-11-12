@@ -16,12 +16,13 @@ Set SARA_ALLOWED_APPS="Notes,Safari,..." to change the allow-list.
 """
 from __future__ import annotations
 
+import datetime
 import os
 import re
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 DEFAULT_ALLOWED_APPS = (
     "Notes",
@@ -35,6 +36,8 @@ DEFAULT_ALLOWED_APPS = (
 )
 
 MAX_TEXT_LENGTH = 5000
+
+MAX_REMINDER_TITLE = 200
 
 # Sources for note text. "the terminal output" means the last lines Sara printed in
 # this terminal (run_voice.py registers them); "the clipboard" means what you copied.
@@ -75,6 +78,11 @@ class MacResult:
     message: str
     risk: Risk = Risk.SAFE
     executed: bool = False
+    # A clarification is a question back to the user, not a failure. `pending`
+    # holds what Sara still owes the user an answer on (e.g. a reminder task
+    # waiting for a clearer time); the voice layer keeps it for the follow-up window.
+    clarification: bool = False
+    pending: Optional[dict] = None
 
 
 def allowed_apps() -> list[str]:
@@ -274,6 +282,203 @@ def edit_note(title: str = "", body: str = "", mode: str = "set") -> MacResult:
     return MacResult(True, f"Edited note: {summary}", Risk.SAFE, executed=True)
 
 
+# ---------------------------------------------------------------------------
+# Reminders ("Sara, remind me to call the dentist at 5 pm")
+#
+# Time phrases are parsed here, next to the AppleScript that needs the due date.
+# An unclear time is a question back to the user, never a guess.
+# ---------------------------------------------------------------------------
+
+_WORD_HOURS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+}
+
+_DURATION_RE = re.compile(r"\bin\s+(\d+)\s*(minutes?|mins?|hours?|hrs?)\b", re.IGNORECASE)
+_VAGUE_IN_RE = re.compile(r"\bin\s+a\s+(?:bit|while|moment)\b", re.IGNORECASE)
+_DAY_RE = re.compile(r"\b(today|tomorrow)\b", re.IGNORECASE)
+_NAMED_TIME_RE = re.compile(r"\bat\s+(noon|midday|midnight)\b", re.IGNORECASE)
+_DIGIT_TIME_RE = re.compile(
+    r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(a\.?\s?m\.?|p\.?\s?m\.?)?\b", re.IGNORECASE
+)
+_WORD_TIME_RE = re.compile(
+    r"\bat\s+(" + "|".join(_WORD_HOURS) + r")\s*(a\.?\s?m\.?|p\.?\s?m\.?)\b", re.IGNORECASE
+)
+_VAGUE_DAY_RE = re.compile(r"\btonight\b|\bthis\s+(?:morning|afternoon|evening)\b", re.IGNORECASE)
+
+_ASK_FORMAT = "I did not catch the time. What time? For example 'at 5 pm' or 'in 20 minutes'."
+
+
+class When(NamedTuple):
+    due: Optional[datetime.datetime]
+    error: Optional[str]
+    # True when the phrase named a clock time without a day ("at 5 pm", "at noon").
+    # Then a time that is already past today rolls to tomorrow, which Sara must
+    # confirm out loud instead of silently picking the day.
+    bare_clock: bool = False
+
+
+def _hour24(hour: int, ampm: str) -> int:
+    pm = ampm.lower().replace(".", "").strip().startswith("p")
+    return hour % 12 + (12 if pm else 0)
+
+
+def _combine(day: Optional[datetime.date], hour: int, minute: int, now: datetime.datetime) -> datetime.datetime:
+    """An explicit day stays on that day; a bare clock time means its next occurrence."""
+    if day is not None:
+        return datetime.datetime(day.year, day.month, day.day, hour, minute)
+    due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if due <= now:
+        due += datetime.timedelta(days=1)
+    return due
+
+
+def parse_reminder_when(when: str, now: Optional[datetime.datetime] = None) -> When:
+    """Resolve a spoken time phrase to a due datetime.
+
+    Returns a When:
+      When(due=datetime, error=None)   - time understood
+      When(due=None, error=None)       - no time given: reminder without a due date
+      When(due=None, error=message)    - unclear time: ask instead of guessing
+    """
+    now = now or datetime.datetime.now()
+    text = (when or "").strip().lower().rstrip(".!?").strip()
+    if not text:
+        return When(None, None)
+
+    m = _DURATION_RE.search(text)
+    if m:
+        n = int(m.group(1))
+        if m.group(2).lower().startswith("h"):
+            return When(now + datetime.timedelta(hours=n), None)
+        return When(now + datetime.timedelta(minutes=n), None)
+    if _VAGUE_IN_RE.search(text):
+        return When(None, "I need an exact time. For example 'in 20 minutes' or 'at 5 pm'.")
+
+    day = None
+    dm = _DAY_RE.search(text)
+    if dm:
+        day = now.date() if dm.group(1) == "today" else now.date() + datetime.timedelta(days=1)
+
+    m = _NAMED_TIME_RE.search(text)
+    if m:
+        hour = 0 if m.group(1) == "midnight" else 12
+        return When(_combine(day, hour, 0, now), None, bare_clock=day is None)
+
+    tm = _DIGIT_TIME_RE.search(text)
+    if tm:
+        hour, minute, ampm = int(tm.group(1)), int(tm.group(2) or 0), tm.group(3)
+        if ampm:
+            if hour > 12:
+                return When(None, _ASK_FORMAT)
+            hour = _hour24(hour, ampm)
+        elif tm.group(2) is None and hour <= 12:
+            # "at 5" alone: could be morning or afternoon, so ask.
+            return When(None, f"Did you mean {hour} am or {hour} pm?")
+        elif hour > 23:
+            return When(None, _ASK_FORMAT)
+        return When(_combine(day, hour, minute, now), None, bare_clock=day is None)
+
+    wm = _WORD_TIME_RE.search(text)
+    if wm:
+        return When(_combine(day, _hour24(_WORD_HOURS[wm.group(1).lower()], wm.group(2)), 0, now), None, bare_clock=day is None)
+
+    if _VAGUE_DAY_RE.search(text):
+        return When(None, "I need an exact time. For example 'at 6 pm'.")
+    if day is not None:
+        return When(None, f"What time {dm.group(1)}? For example '{dm.group(1)} at 9 am'.")
+    return When(None, _ASK_FORMAT)
+
+
+def _describe_due(due: datetime.datetime, now: Optional[datetime.datetime] = None) -> str:
+    now = now or datetime.datetime.now()
+    time_txt = f"{(due.hour % 12) or 12}:{due.minute:02d} {'AM' if due.hour < 12 else 'PM'}"
+    if due.date() == now.date():
+        return f"today at {time_txt}"
+    if due.date() == now.date() + datetime.timedelta(days=1):
+        return f"tomorrow at {time_txt}"
+    return f"{due.strftime('%A, %B')} {due.day} at {time_txt}"
+
+
+_REMIND_SCRIPT = """
+on run argv
+    set remName to item 1 of argv
+    tell application "Reminders"
+        if (count of lists) is 0 then error "No Reminders list found"
+        if (count of argv) > 1 then
+            set dueDate to current date
+            set day of dueDate to 1
+            set year of dueDate to (item 2 of argv) as integer
+            set month of dueDate to (item 3 of argv) as integer
+            set day of dueDate to (item 4 of argv) as integer
+            set hours of dueDate to (item 5 of argv) as integer
+            set minutes of dueDate to (item 6 of argv) as integer
+            set seconds of dueDate to 0
+            tell default list to make new reminder with properties {name:remName, due date:dueDate}
+        else
+            tell default list to make new reminder with properties {name:remName}
+        end if
+    end tell
+end run
+"""
+
+
+def create_reminder(
+    task: str,
+    when: str = "",
+    now: Optional[datetime.datetime] = None,
+    next_day_ok: bool = False,
+) -> MacResult:
+    """Create an Apple Reminders item in the default list.
+
+    An unclear time is a question back (clarification=True, pending=what Sara is
+    still waiting for), never a guess. A bare clock time that is already past
+    today ("at 7 am" said at 3 pm) would land on tomorrow; Sara asks first
+    unless the caller passes next_day_ok=True after the user confirmed."""
+    if match_app("Reminders") is None:
+        return MacResult(False, "Reminders is not on my allowed apps list", Risk.BLOCKED)
+    task = (task or "").strip().strip(".!? ")[:MAX_REMINDER_TITLE]
+    if not task:
+        return MacResult(
+            False,
+            "What should I remind you about? For example 'remind me to call the dentist at 5 pm'.",
+            Risk.SAFE,
+        )
+    now = now or datetime.datetime.now()
+    when_res = parse_reminder_when(when, now)
+    if when_res.error:
+        return MacResult(
+            False,
+            when_res.error,
+            Risk.SAFE,
+            clarification=True,
+            pending={"kind": "time", "task": task},
+        )
+    due = when_res.due
+    if due is not None and when_res.bare_clock and due.date() != now.date() and not next_day_ok:
+        question = f"That time has passed today. Remind you {_describe_due(due, now)} instead?"
+        return MacResult(
+            False,
+            question,
+            Risk.SAFE,
+            clarification=True,
+            pending={"kind": "confirm_tomorrow", "task": task, "when": when},
+        )
+    due_txt = f" due {due:%Y-%m-%d %H:%M}" if due else ""
+    if dry_run():
+        return MacResult(True, f"[dry run] would create reminder '{task}'{due_txt}", Risk.SAFE)
+    # The task and the date parts travel as argv, never spliced into the script.
+    argv = ["osascript", "-e", _REMIND_SCRIPT, task]
+    if due is not None:
+        argv += [str(due.year), str(due.month), str(due.day), str(due.hour), str(due.minute)]
+    try:
+        _run(argv)
+    except (subprocess.SubprocessError, OSError) as exc:
+        return MacResult(False, f"Could not create the reminder: {exc}", Risk.SAFE)
+    when_txt = f" for {_describe_due(due, now)}" if due else ""
+    return MacResult(True, f"Created reminder '{task}'{when_txt}", Risk.SAFE, executed=True)
+
+
 _TYPE_SCRIPT = """
 on run argv
     tell application "System Events" to keystroke (item 1 of argv)
@@ -304,6 +509,7 @@ def risk_of(action: str) -> Risk:
         "OPEN_APP": Risk.SAFE,
         "CREATE_NOTE": Risk.SAFE,
         "EDIT_NOTE": Risk.SAFE,
+        "REMIND": Risk.SAFE,
         "TYPE_TEXT": Risk.CONFIRM,
     }.get(action, Risk.BLOCKED)
 
@@ -315,6 +521,9 @@ def execute(
     title: str = "",
     text: str = "",
     mode: str = "set",
+    task: str = "",
+    when: str = "",
+    next_day_ok: bool = False,
     confirm: Optional[Callable[[str], bool]] = None,
 ) -> MacResult:
     """Single entry point for the assistant: dispatch a Mac action by name."""
@@ -324,6 +533,8 @@ def execute(
         return create_note(title, text)
     if action == "EDIT_NOTE":
         return edit_note(title, text, mode)
+    if action == "REMIND":
+        return create_reminder(task, when, next_day_ok=next_day_ok)
     if action == "TYPE_TEXT":
         return type_text(text, confirm)
     return MacResult(False, f"Unknown Mac action '{action}'", Risk.BLOCKED)

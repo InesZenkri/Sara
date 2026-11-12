@@ -23,6 +23,7 @@ Off by default: nothing here runs unless SARA_VOICE_COMMANDS=true and you start
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -32,10 +33,20 @@ from typing import Callable, Optional
 import command_rules
 import echo_guard
 import mac_control
-from intent import IntentGuess, RuleBackend, StreamingIntentRunner
+from intent import IntentGuess, RuleBackend, StreamingIntentRunner, rule_action
 from overlay import OverlayState
 
 PARTIAL_INTERVAL = 0.8  # default seconds between partial transcriptions
+
+# Answers to a pending reminder question (see VoiceController._answer_pending_reminder).
+_YES_RE = re.compile(r"^\s*(?:yes|yeah|yep|yup|sure|ok(?:ay)?|please|do it|ja|genau)[.!\s]*$", re.IGNORECASE)
+_NO_RE = re.compile(r"^\s*(?:no|nope|nah|forget it|never mind|don'?t|stop)[.!\s]*$", re.IGNORECASE)
+_BARE_TIME_ANSWER_RE = re.compile(
+    r"^\s*(?:\d{1,2}(?::\d{2})?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    r"\s*(?:a\.?\s?m\.?|p\.?\s?m\.?)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+_TIME_ANSWER_START_RE = re.compile(r"^\s*(?:at|in|today|tomorrow|tonight|this)\b", re.IGNORECASE)
 
 
 def _log(msg: str) -> None:
@@ -109,6 +120,8 @@ def _describe(g: IntentGuess) -> str:
         return "Creating a note"
     if g.action == "EDIT_NOTE":
         return "Editing the note"
+    if g.action == "REMIND":
+        return "Creating a reminder"
     if g.action == "TYPE_TEXT":
         return "Typing"
     return "Working"
@@ -158,6 +171,9 @@ class VoiceController:
         self.execute = execute
         self.hotword = hotword
         self.log: list = []  # (kind, detail) records, handy for tests and debugging
+        # A reminder question Sara asked and still waits on (e.g. "5 am or 5 pm?").
+        # Lives for the follow-up window; not cleared by _reset() between utterances.
+        self._pending_reminder: Optional[dict] = None
         self.runner = StreamingIntentRunner(
             backend or RuleBackend(mac_control.allowed_apps()), self._fire, clock=clock, min_interval=0.0
         )
@@ -177,14 +193,64 @@ class VoiceController:
 
     def _classify(self, text: str):
         """Like classify_utterance, but for a short time after a command a Mac command
-        is accepted without the wake word ("Sara, open notes" ... "rename that note")."""
+        is accepted without the wake word ("Sara, open notes" ... "rename that note").
+        A pending reminder question is answered first: a short time ("5 pm") completes
+        it, "yes"/"no" settles a next-day confirmation."""
         kind, cmd = command_rules.classify_utterance(text, self.hotword)
-        if kind == "ignore" and self._clock() <= self._followup_until:
-            g = self.runner.backend.classify(text)
-            if g.action and g.confidence >= self.runner.threshold:
-                _log(f"[follow-up] accepted without wake word: {text.strip()!r}")
-                return "command", text.strip()
+        if kind == "ignore":
+            if self._clock() <= self._followup_until:
+                if not self._cancelled:
+                    handled = self._answer_pending_reminder(text)
+                    if handled is not None:
+                        return handled
+                g = self.runner.backend.classify(text)
+                if g.action and g.confidence >= self.runner.threshold:
+                    _log(f"[follow-up] accepted without wake word: {text.strip()!r}")
+                    return "command", text.strip()
+            else:
+                self._pending_reminder = None  # the window expired: the question is dead
+        elif kind == "command":
+            self._pending_reminder = None  # an explicit wake-word command supersedes it
         return kind, cmd
+
+    def _answer_pending_reminder(self, text: str):
+        """If Sara just asked about a reminder, consume the answer.
+
+        Returns a (kind, cmd) pair when the text was handled, else None. A fresh
+        command never inherits the held task; cancel words are handled upstream."""
+        p = self._pending_reminder
+        if p is None:
+            return None
+        t = text.strip()
+        if not t:
+            return None
+        if rule_action(t) is not None:
+            self._pending_reminder = None
+            return None  # a fresh command supersedes the question
+        if p["kind"] == "confirm_tomorrow":
+            if _YES_RE.match(t):
+                self._pending_reminder = None
+                guess = IntentGuess(
+                    "REMIND", {"task": p["task"], "when": p["when"], "next_day_ok": True}, 0.9
+                )
+                self._fire(guess, early=False)
+                return "mac", ""
+            if _NO_RE.match(t):
+                self._pending_reminder = None
+                self.overlay.done("Cancelled")
+                self.log.append(("cancel", "pending reminder"))
+                return "cancelled", ""
+            # Any other time answer replaces the proposed day.
+        when = None
+        if _BARE_TIME_ANSWER_RE.match(t):
+            when = "at " + t.rstrip(".! ")
+        elif _TIME_ANSWER_START_RE.match(t):
+            when = t
+        if when is None:
+            return None  # not an answer to the question: keep waiting
+        self._pending_reminder = None  # re-set by _fire if the new time is still unclear
+        self._fire(IntentGuess("REMIND", {"task": p["task"], "when": when}, 0.9), early=False)
+        return "mac", ""
 
     # -- actions -----------------------------------------------------------
     def _fire(self, g: IntentGuess, early: bool) -> None:
@@ -197,14 +263,20 @@ class VoiceController:
             title=g.args.get("title", ""),
             text=g.args.get("text", ""),
             mode=g.args.get("mode", "set"),
+            task=g.args.get("task", ""),
+            when=g.args.get("when", ""),
+            next_day_ok=g.args.get("next_day_ok", False),
             confirm=self.confirm,
         )
+        self._pending_reminder = res.pending  # a clarification keeps the question open
         self.timings["action_ms"] = (time.monotonic() - t_action) * 1000
         self._open_followup()
         self.log.append(("early" if early else "final", g.action, res.ok, res.message))
         _log(f"[{'early ' if early else ''}action] {g.action} {'ok' if res.ok else 'FAILED'}: {res.message}")
         if res.ok:
             self.overlay.done(res.message)
+        elif res.pending:
+            self.overlay.waiting(res.message)  # Sara asked a question; not an error
         else:
             self.overlay.error(res.message)
         if self.notify and (not res.ok or res.executed):
@@ -245,11 +317,14 @@ class VoiceController:
         kind, cmd = self._classify(text)
         cancelled = self._cancelled or kind == "cancel"
         try:
+            if kind in ("mac", "cancelled"):  # a pending reminder question was answered
+                return kind
             if kind == "ignore":
                 if not self._cancelled:
                     self.overlay.hide()
                 return "cancelled" if self._cancelled else "ignored"
             if kind == "quit":
+                self._pending_reminder = None
                 self.overlay.done("Bye")
                 self.log.append(("quit",))
                 if self.on_quit is not None:
@@ -259,6 +334,7 @@ class VoiceController:
                         print(f"Quit handler failed: {exc}", flush=True)
                 return "quit"
             if cancelled:
+                self._pending_reminder = None
                 self.overlay.done("Cancelled")
                 return "cancelled"
             if kind == "wake":
